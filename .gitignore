@@ -1,7 +1,7 @@
 # STM32CubeIDE
 build/
 mx.scratch
-!.settings
+.settings/
 .metadata/
 *.ld
 .vscode/
