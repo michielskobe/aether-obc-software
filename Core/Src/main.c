@@ -651,6 +651,12 @@ void StartDataAcquisition(void *argument)
   /* USER CODE BEGIN StartDataAcquisition */
   // Wait for SystemManager to start up and set the DATA_ACQ_STARTUP_FLAG before proceeding
   osThreadFlagsWait(DATA_ACQ_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
+
+  if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
+  {
+	  Error_Handler();
+  }
+  
   /* Infinite loop */
   for(;;)
   {
