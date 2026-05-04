@@ -36,6 +36,11 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define RMU_STARTUP_FLAG      (1U << 0)  // 0x0001
+#define GNSS_STARTUP_FLAG     (1U << 1)  // 0x0002
+#define IRIDIUM_STARTUP_FLAG  (1U << 2)  // 0x0004
+#define SD_CARD_STARTUP_FLAG  (1U << 3)  // 0x0008
+#define DATA_ACQ_STARTUP_FLAG (1U << 4)  // 0x0010
 
 /* USER CODE END PD */
 
@@ -579,6 +584,13 @@ static void MX_GPIO_Init(void)
 void StartSystemManager(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  // Set startup flags for all other threads to indicate that the system is ready 
+  // TODO: set these flags in a proper sequence instead of all at once here
+  osThreadFlagsSet(RMUManagerHandle, RMU_STARTUP_FLAG);
+  osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
+  osThreadFlagsSet(IridiumManagerHandle, IRIDIUM_STARTUP_FLAG);
+  osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
+  osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
   /* Infinite loop */
   for(;;)
   {
@@ -597,6 +609,8 @@ void StartSystemManager(void *argument)
 void StartRMUManager(void *argument)
 {
   /* USER CODE BEGIN StartRMUManager */
+  // Wait for SystemManager to start up and set the RMU_STARTUP_FLAG before proceeding
+  osThreadFlagsWait(RMU_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   /* Infinite loop */
   for(;;)
   {
@@ -615,6 +629,8 @@ void StartRMUManager(void *argument)
 void StartGNSSManager(void *argument)
 {
   /* USER CODE BEGIN StartGNSSManager */
+  // Wait for SystemManager to start up and set the GNSS_STARTUP_FLAG before proceeding
+  osThreadFlagsWait(GNSS_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   /* Infinite loop */
   for(;;)
   {
@@ -633,6 +649,8 @@ void StartGNSSManager(void *argument)
 void StartDataAcquisition(void *argument)
 {
   /* USER CODE BEGIN StartDataAcquisition */
+  // Wait for SystemManager to start up and set the DATA_ACQ_STARTUP_FLAG before proceeding
+  osThreadFlagsWait(DATA_ACQ_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   /* Infinite loop */
   for(;;)
   {
@@ -651,6 +669,8 @@ void StartDataAcquisition(void *argument)
 void StartSDCardManager(void *argument)
 {
   /* USER CODE BEGIN StartSDCardManager */
+  // Wait for SystemManager to start up and set the SD_CARD_STARTUP_FLAG before proceeding
+  osThreadFlagsWait(SD_CARD_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   /* Infinite loop */
   for(;;)
   {
@@ -669,6 +689,8 @@ void StartSDCardManager(void *argument)
 void StartIridiumManager(void *argument)
 {
   /* USER CODE BEGIN StartIridiumManager */
+  // Wait for SystemManager to start up and set the IRIDIUM_STARTUP_FLAG before proceeding
+  osThreadFlagsWait(IRIDIUM_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   /* Infinite loop */
   for(;;)
   {
