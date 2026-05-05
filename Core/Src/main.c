@@ -19,9 +19,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "cmsis_os2.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdint.h>
 #include <string.h>
 
 /* USER CODE END Includes */
@@ -47,6 +49,11 @@ typedef struct {
 #define IRIDIUM_STARTUP_FLAG  (1U << 2)  // 0x0004
 #define SD_CARD_STARTUP_FLAG  (1U << 3)  // 0x0008
 #define DATA_ACQ_STARTUP_FLAG (1U << 4)  // 0x0010
+#define LO_FLAG               (1U << 5)  // 0x0020
+#define SODS_FLAG             (1U << 6)  // 0x0040
+#define SOE_FLAG              (1U << 7)  // 0x0080
+#define RMU_SHUTDOWN_FLAG     (1U << 8)  // 0x0100
+#define RMU_STOPPED_FLAG      (1U << 9)  // 0x0200
 
 /* USER CODE END PD */
 
@@ -150,26 +157,21 @@ void StartIridiumManager(void *argument);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/**
-  * @brief  This function handles CAN RX FIFO 0 message pending callback.
-  * @param  hcan: pointer to a CAN_HandleTypeDef structure that contains
-  *                the configuration information for the specified CAN.
-  * @retval None
- */
-void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+static void SendCANCommand(uint16_t id, const uint8_t *data, uint8_t dlc)
 {
-  // Read the CAN message from the hardware FIFO and put it into the CAN_RxQueue for processing by the DataAcquisition thread
-  can_rx_msg_t msg;
+    CAN_TxHeaderTypeDef header = {
+        .IDE   = CAN_ID_STD,
+        .StdId = id,
+        .RTR   = CAN_RTR_DATA,
+        .DLC   = dlc
+    };
 
-  while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0)
-  {
-    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &msg.RxHeader, msg.RxData) != HAL_OK)
+    uint32_t mailbox;
+
+    if (HAL_CAN_AddTxMessage(&hcan1, &header, (uint8_t *)data, &mailbox) != HAL_OK)
     {
-      break;
+        Error_Handler();
     }
-
-    osMessageQueuePut(CAN_RxQueueHandle, &msg, 0U, 0U);
-  }
 }
 
 /* USER CODE END 0 */
@@ -656,6 +658,51 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+  * @brief  This function handles CAN RX FIFO 0 message pending callback.
+  * @param  hcan: pointer to a CAN_HandleTypeDef structure that contains
+  *                the configuration information for the specified CAN.
+  * @retval None
+ */
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+  // Read the CAN message from the hardware FIFO and put it into the CAN_RxQueue for processing by the DataAcquisition thread
+  can_rx_msg_t msg;
+
+  while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0)
+  {
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &msg.RxHeader, msg.RxData) != HAL_OK)
+    {
+      break;
+    }
+
+    osMessageQueuePut(CAN_RxQueueHandle, &msg, 0U, 0U);
+  }
+}
+
+/** 
+ * @brief  EXTI line detection callbacks.
+ * @param  GPIO_Pin: Specifies the pins connected to corresponding EXTI line
+ * @retval None
+*/
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  switch (GPIO_Pin)
+  {
+    case RXSM_LO_Pin:
+      osThreadFlagsSet(SystemManagerHandle, LO_FLAG);
+      break;
+    case RXSM_SODS_Pin:
+      osThreadFlagsSet(SystemManagerHandle, SODS_FLAG);
+      break;
+    case RXSM_SOE_Pin:
+      osThreadFlagsSet(SystemManagerHandle, SOE_FLAG);
+      break;
+    default:
+      break;
+  }
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartSystemManager */
@@ -668,18 +715,69 @@ static void MX_GPIO_Init(void)
 void StartSystemManager(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  // Set startup flags for all other threads to indicate that the system is ready 
-  // TODO: set these flags in a proper sequence instead of all at once here
+
+  // Signal the RMUManager to start up by setting the RMU_STARTUP_FLAG
   osThreadFlagsSet(RMUManagerHandle, RMU_STARTUP_FLAG);
+
+  /* Wait for Lift Off (LO) signal before proceeding.
+  * LO is active low, so we check if the pin is currently high (not yet LO) before waiting for the flag. 
+  * If the pin is already low, we can skip waiting since LO has already occurred. */
+  if (HAL_GPIO_ReadPin(RXSM_LO_GPIO_Port, RXSM_LO_Pin) == GPIO_PIN_SET)
+  {
+    osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
+  }
+
+  // TODO: Instruct EPS to power on camera system, UHFCOM and IFS
+  SendCANCommand(0x400, (uint8_t[]){0x01}, 1);  // Example command to power on the systems
+
+  /* Wait for Start of Data Storage (SODS) signal before proceeding.
+  * SODS is active low, so we check if the pin is currently high (not yet SODS) before waiting for the flag. 
+  * If the pin is already low, we can skip waiting since SODS has already occurred. */
+  if (HAL_GPIO_ReadPin(RXSM_SODS_GPIO_Port, RXSM_SODS_Pin) == GPIO_PIN_SET)
+  {
+    osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
+  }
+
+  // TODO: Instruct camera system to turn on cameras
+  SendCANCommand(0x500, (uint8_t[]){0x01}, 1);  // Example command to turn on cameras
+
+  // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
+
+  /* Wait for Start of Experiment (SOE) signal (FFU ejection) before proceeding.
+  * SOE is active low, so we check if the pin is currently high (not yet SOE) before waiting for the flag. 
+  * If the pin is already low, we can skip waiting since SOE has already occurred. */
+  if (HAL_GPIO_ReadPin(RXSM_SOE_GPIO_Port, RXSM_SOE_Pin) == GPIO_PIN_SET)
+  {
+    osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
+  }
+
+  // Terminate RMU Manager Task
+  osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
+  uint32_t flags = osThreadFlagsWait(RMU_STOPPED_FLAG, osFlagsWaitAny, 1000);
+
+  // Check if the RMU Manager task acknowledged the shutdown signal and stopped within the timeout period
+  if ((int32_t)flags < 0)
+  {
+    // Timeout occurred - RMU Manager did not stop in time, force terminate the task
+    osThreadTerminate(RMUManagerHandle);
+  }
+
+  // TODO: Provide IFS with ARM and FIRE signals
+  SendCANCommand(0x300, (uint8_t[]){0x01}, 1);  // Example command to provide ARM signal to IFS
+
+  // Short delay (5 seconds) to ensure the ARM signal is registered by IFS before sending the FIRE signal
+  osDelay(5000);
+
+  SendCANCommand(0x300, (uint8_t[]){0x02}, 1);  // Example command to provide FIRE signal to IFS
+
+  // Signal the IridiumManager, SDCardManager, and DataAcquisition threads to start up by setting their respective startup flags
   osThreadFlagsSet(IridiumManagerHandle, IRIDIUM_STARTUP_FLAG);
   osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
   osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+
+  // Terminate System Manager Task
+  osThreadExit();
   /* USER CODE END 5 */
 }
 
@@ -698,8 +796,22 @@ void StartRMUManager(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    // Check for the RMU_SHUTDOWN_FLAG to know when to terminate the RMU Manager task (non-blocking)
+    uint32_t flags = osThreadFlagsWait(RMU_SHUTDOWN_FLAG, osFlagsWaitAny, 0);
+    
+    // If the RMU_SHUTDOWN_FLAG is set, break out of the loop and terminate the RMU Manager task
+    if ((int32_t)flags >= 0 && (flags & RMU_SHUTDOWN_FLAG))
+    {
+      break;
+    }
+
     osDelay(1);
   }
+
+  // Terminate RMU Manager Task and signal that it has stopped by setting the RMU_STOPPED_FLAG
+  osThreadFlagsSet(SystemManagerHandle, RMU_STOPPED_FLAG);
+  osThreadExit();
+
   /* USER CODE END StartRMUManager */
 }
 
