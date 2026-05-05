@@ -19,9 +19,13 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "cmsis_os2.h"
+#include "stm32l4xx_hal_can.h"
+#include <stdint.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <string.h>
 
 /* USER CODE END Includes */
 
@@ -32,6 +36,11 @@ typedef struct {
     uint8_t id;            // sensor id
     uint8_t data[4];       // payload
 } sensor_entry_t;
+
+typedef struct {
+  CAN_RxHeaderTypeDef RxHeader;
+  uint8_t RxData[8];
+} can_rx_msg_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -102,15 +111,20 @@ const osThreadAttr_t IridiumManager_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
-/* Definitions for SDCard_MsgQueue */
-osMessageQueueId_t SDCard_MsgQueueHandle;
-const osMessageQueueAttr_t SDCard_MsgQueue_attributes = {
-  .name = "SDCard_MsgQueue"
+/* Definitions for SD_CardQueue */
+osMessageQueueId_t SD_CardQueueHandle;
+const osMessageQueueAttr_t SD_CardQueue_attributes = {
+  .name = "SD_CardQueue"
 };
-/* Definitions for IR_MsgQueue */
-osMessageQueueId_t IR_MsgQueueHandle;
-const osMessageQueueAttr_t IR_MsgQueue_attributes = {
-  .name = "IR_MsgQueue"
+/* Definitions for IridiumQueue */
+osMessageQueueId_t IridiumQueueHandle;
+const osMessageQueueAttr_t IridiumQueue_attributes = {
+  .name = "IridiumQueue"
+};
+/* Definitions for CAN_RxQueue */
+osMessageQueueId_t CAN_RxQueueHandle;
+const osMessageQueueAttr_t CAN_RxQueue_attributes = {
+  .name = "CAN_RxQueue"
 };
 /* USER CODE BEGIN PV */
 
@@ -138,6 +152,28 @@ void StartIridiumManager(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+  * @brief  This function handles CAN RX FIFO 0 message pending callback.
+  * @param  hcan: pointer to a CAN_HandleTypeDef structure that contains
+  *                the configuration information for the specified CAN.
+  * @retval None
+ */
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+  // Read the CAN message from the hardware FIFO and put it into the CAN_RxQueue for processing by the DataAcquisition thread
+  can_rx_msg_t msg;
+
+  while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0)
+  {
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &msg.RxHeader, msg.RxData) != HAL_OK)
+    {
+      break;
+    }
+
+    osMessageQueuePut(CAN_RxQueueHandle, &msg, 0U, 0U);
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -196,11 +232,14 @@ int main(void)
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
-  /* creation of SDCard_MsgQueue */
-  SDCard_MsgQueueHandle = osMessageQueueNew (256, sizeof(sensor_entry_t), &SDCard_MsgQueue_attributes);
+  /* creation of SD_CardQueue */
+  SD_CardQueueHandle = osMessageQueueNew (128, sizeof(sensor_entry_t), &SD_CardQueue_attributes);
 
-  /* creation of IR_MsgQueue */
-  IR_MsgQueueHandle = osMessageQueueNew (256, sizeof(sensor_entry_t), &IR_MsgQueue_attributes);
+  /* creation of IridiumQueue */
+  IridiumQueueHandle = osMessageQueueNew (128, sizeof(sensor_entry_t), &IridiumQueue_attributes);
+
+  /* creation of CAN_RxQueue */
+  CAN_RxQueueHandle = osMessageQueueNew (30, sizeof(can_rx_msg_t), &CAN_RxQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -330,6 +369,42 @@ static void MX_CAN1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN1_Init 2 */
+
+  // Configure CAN filter to receive messages
+  CAN_FilterTypeDef filter = {0};
+
+  filter.FilterBank           = 0;
+  filter.FilterMode           = CAN_FILTERMODE_IDMASK;
+  filter.FilterScale          = CAN_FILTERSCALE_32BIT;
+
+  // Target ID: 0x000, shifted left by 5 into the register
+  filter.FilterIdHigh         = (0x000 << 5);   // 0x0000
+  filter.FilterIdLow          = 0x0000;
+
+  // Mask: only check the top 3 bits of the 11-bit ID (bits 10–8)
+  // 0x700 << 5 = 0xE000 -> forces bits 10/9/8 to match (must be 0)
+  filter.FilterMaskIdHigh     = (0x700 << 5);   // 0xE000
+  filter.FilterMaskIdLow      = 0x0000;
+
+  filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+  filter.FilterActivation     = ENABLE;
+
+  if (HAL_CAN_ConfigFilter(&hcan1, &filter) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  // Start the CAN peripheral to begin receiving messages
+  if (HAL_CAN_Start(&hcan1) != HAL_OK)
+  {
+	  Error_Handler();
+  }
+
+  // Activate CAN RX interrupt
+  if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
+  {
+	  Error_Handler();
+  }
 
   /* USER CODE END CAN1_Init 2 */
 
@@ -652,15 +727,33 @@ void StartDataAcquisition(void *argument)
   // Wait for SystemManager to start up and set the DATA_ACQ_STARTUP_FLAG before proceeding
   osThreadFlagsWait(DATA_ACQ_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
 
-  if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
-  {
-	  Error_Handler();
-  }
+  can_rx_msg_t rx_msg;
+  sensor_entry_t entry;
   
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    // Wait for a CAN message to be received and put into the CAN_RxQueue by the RX ISR
+    if (osMessageQueueGet(CAN_RxQueueHandle, &rx_msg, NULL, osWaitForever) == osOK)
+        {
+          // Get the current tick count to use as a timestamp for the data packet
+          uint32_t tick = HAL_GetTick();
+
+          entry.timestamp[0] = (tick >> 16) & 0xFF;
+          entry.timestamp[1] = (tick >> 8)  & 0xFF;
+          entry.timestamp[2] = tick & 0xFF;
+
+          // Use the lower 8 bits of the CAN message's standard ID as the sensor ID for this data packet
+          entry.id = (uint8_t)(rx_msg.RxHeader.StdId & 0xFF);
+
+          // Copy the first 4 bytes of the CAN message data into the data field of the sensor entry
+          // TODO: implement a more robust way of handling different types of CAN messages with varying data lengths and formats, based on the sensor ID
+          memcpy(entry.data, rx_msg.RxData, 4);
+
+          // Put the sensor entry into both the SD card queue and the Iridium queue for processing by the respective manager threads
+          osMessageQueuePut(SD_CardQueueHandle, &entry, 0, 0);
+          osMessageQueuePut(IridiumQueueHandle, &entry, 0, 0);
+        }
   }
   /* USER CODE END StartDataAcquisition */
 }
