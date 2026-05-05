@@ -59,10 +59,13 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define RXSM_SODS_Pin GPIO_PIN_0
 #define RXSM_SODS_GPIO_Port GPIOB
+#define RXSM_SODS_EXTI_IRQn EXTI0_IRQn
 #define RXSM_SOE_Pin GPIO_PIN_1
 #define RXSM_SOE_GPIO_Port GPIOB
+#define RXSM_SOE_EXTI_IRQn EXTI1_IRQn
 #define RXSM_LO_Pin GPIO_PIN_2
 #define RXSM_LO_GPIO_Port GPIOB
+#define RXSM_LO_EXTI_IRQn EXTI2_IRQn
 #define PGOOD_Pin GPIO_PIN_12
 #define PGOOD_GPIO_Port GPIOB
 #define PGOOD_EXTI_IRQn EXTI15_10_IRQn
@@ -72,10 +75,12 @@ void Error_Handler(void);
 #define PWR_EN_GPIO_Port GPIOB
 #define NA_Pin GPIO_PIN_7
 #define NA_GPIO_Port GPIOC
+#define NA_EXTI_IRQn EXTI9_5_IRQn
 #define IR_ON_OFF_Pin GPIO_PIN_8
 #define IR_ON_OFF_GPIO_Port GPIOC
 #define RI_Pin GPIO_PIN_9
 #define RI_GPIO_Port GPIOC
+#define RI_EXTI_IRQn EXTI9_5_IRQn
 #define IR_RX_Pin GPIO_PIN_10
 #define IR_RX_GPIO_Port GPIOC
 #define IR_TX_Pin GPIO_PIN_11
