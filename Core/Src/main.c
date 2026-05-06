@@ -722,7 +722,7 @@ void StartSystemManager(void *argument)
   // Wait for Lift Off (LO) signal before proceeding.
   osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
 
-  // TODO: Instruct EPS to power on camera system, UHFCOM and IFS
+  // TODO: Instruct EPS to power on camera system, UHFCOM, SATCOM, GNSS and IFS
   SendCANCommand(0x400, (uint8_t[]){0x01}, 1);  // Example command to power on the systems
 
   // Wait for Start of Data Storage (SODS) signal before proceeding.
