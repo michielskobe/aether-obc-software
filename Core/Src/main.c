@@ -719,24 +719,14 @@ void StartSystemManager(void *argument)
   // Signal the RMUManager to start up by setting the RMU_STARTUP_FLAG
   osThreadFlagsSet(RMUManagerHandle, RMU_STARTUP_FLAG);
 
-  /* Wait for Lift Off (LO) signal before proceeding.
-  * LO is active low, so we check if the pin is currently high (not yet LO) before waiting for the flag. 
-  * If the pin is already low, we can skip waiting since LO has already occurred. */
-  if (HAL_GPIO_ReadPin(RXSM_LO_GPIO_Port, RXSM_LO_Pin) == GPIO_PIN_SET)
-  {
+  // Wait for Lift Off (LO) signal before proceeding.
     osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
-  }
 
   // TODO: Instruct EPS to power on camera system, UHFCOM and IFS
   SendCANCommand(0x400, (uint8_t[]){0x01}, 1);  // Example command to power on the systems
 
-  /* Wait for Start of Data Storage (SODS) signal before proceeding.
-  * SODS is active low, so we check if the pin is currently high (not yet SODS) before waiting for the flag. 
-  * If the pin is already low, we can skip waiting since SODS has already occurred. */
-  if (HAL_GPIO_ReadPin(RXSM_SODS_GPIO_Port, RXSM_SODS_Pin) == GPIO_PIN_SET)
-  {
-    osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
-  }
+  // Wait for Start of Data Storage (SODS) signal before proceeding.
+  osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
 
   // TODO: Instruct camera system to turn on cameras
   SendCANCommand(0x500, (uint8_t[]){0x01}, 1);  // Example command to turn on cameras
@@ -744,13 +734,8 @@ void StartSystemManager(void *argument)
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
 
-  /* Wait for Start of Experiment (SOE) signal (FFU ejection) before proceeding.
-  * SOE is active low, so we check if the pin is currently high (not yet SOE) before waiting for the flag. 
-  * If the pin is already low, we can skip waiting since SOE has already occurred. */
-  if (HAL_GPIO_ReadPin(RXSM_SOE_GPIO_Port, RXSM_SOE_Pin) == GPIO_PIN_SET)
-  {
-    osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
-  }
+  // Wait for Start of Experiment (SOE) signal (FFU ejection) before proceeding.
+  osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
 
   // Terminate RMU Manager Task
   osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
