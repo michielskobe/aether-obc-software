@@ -720,7 +720,7 @@ void StartSystemManager(void *argument)
   osThreadFlagsSet(RMUManagerHandle, RMU_STARTUP_FLAG);
 
   // Wait for Lift Off (LO) signal before proceeding.
-    osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
+  osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
 
   // TODO: Instruct EPS to power on camera system, UHFCOM and IFS
   SendCANCommand(0x400, (uint8_t[]){0x01}, 1);  // Example command to power on the systems
