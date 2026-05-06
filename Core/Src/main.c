@@ -53,7 +53,6 @@ typedef struct {
 #define SODS_FLAG             (1U << 6)  // 0x0040
 #define SOE_FLAG              (1U << 7)  // 0x0080
 #define RMU_SHUTDOWN_FLAG     (1U << 8)  // 0x0100
-#define RMU_STOPPED_FLAG      (1U << 9)  // 0x0200
 
 /* USER CODE END PD */
 
@@ -739,14 +738,6 @@ void StartSystemManager(void *argument)
 
   // Terminate RMU Manager Task
   osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
-  uint32_t flags = osThreadFlagsWait(RMU_STOPPED_FLAG, osFlagsWaitAny, 1000);
-
-  // Check if the RMU Manager task acknowledged the shutdown signal and stopped within the timeout period
-  if ((int32_t)flags < 0)
-  {
-    // Timeout occurred - RMU Manager did not stop in time, force terminate the task
-    osThreadTerminate(RMUManagerHandle);
-  }
 
   // TODO: Provide IFS with ARM and FIRE signals
   SendCANCommand(0x300, (uint8_t[]){0x01}, 1);  // Example command to provide ARM signal to IFS
@@ -793,8 +784,7 @@ void StartRMUManager(void *argument)
     osDelay(1);
   }
 
-  // Terminate RMU Manager Task and signal that it has stopped by setting the RMU_STOPPED_FLAG
-  osThreadFlagsSet(SystemManagerHandle, RMU_STOPPED_FLAG);
+  // Terminate RMU Manager Task
   osThreadExit();
 
   /* USER CODE END StartRMUManager */
