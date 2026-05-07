@@ -742,9 +742,6 @@ void StartSystemManager(void *argument)
   // TODO: Provide IFS with ARM and FIRE signals
   SendCANCommand(0x300, (uint8_t[]){0x01}, 1);  // Example command to provide ARM signal to IFS
 
-  // Short delay (5 seconds) to ensure the ARM signal is registered by IFS before sending the FIRE signal
-  osDelay(5000);
-
   SendCANCommand(0x300, (uint8_t[]){0x02}, 1);  // Example command to provide FIRE signal to IFS
 
   // Signal the IridiumManager, SDCardManager, and DataAcquisition threads to start up by setting their respective startup flags
@@ -752,8 +749,11 @@ void StartSystemManager(void *argument)
   osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
   osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
 
-  // Terminate System Manager Task
-  osThreadExit();
+  for (;;)
+  {
+    // Monitor pressure and altitude data and send parachute deployment command
+    osDelay(1);
+  }
   /* USER CODE END 5 */
 }
 
