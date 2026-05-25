@@ -63,3 +63,6 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Data processing files
+*.csv

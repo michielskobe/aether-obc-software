@@ -57,6 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define SD_CS_Pin GPIO_PIN_4
+#define SD_CS_GPIO_Port GPIOA
 #define RXSM_SODS_Pin GPIO_PIN_0
 #define RXSM_SODS_GPIO_Port GPIOB
 #define RXSM_SODS_EXTI_IRQn EXTI0_IRQn

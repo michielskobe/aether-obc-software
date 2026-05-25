@@ -26,6 +26,7 @@
 #include <string.h>
 #include "data_packet.h"
 #include "mosaic_x5.h"
+#include "sd_spi.h"
 
 
 /* USER CODE END Includes */
@@ -61,6 +62,8 @@ typedef struct {
 
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan1;
+
+CRC_HandleTypeDef hcrc;
 
 UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart4;
@@ -129,7 +132,9 @@ const osMessageQueueAttr_t CAN_RxQueue_attributes = {
   .name = "CAN_RxQueue"
 };
 /* USER CODE BEGIN PV */
-
+static uint8_t sd_block[SD_BLOCK_SIZE];
+static uint16_t block_index = 0;
+static uint32_t current_block_addr = 3;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -141,6 +146,7 @@ static void MX_LPUART1_UART_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_UART4_Init(void);
 static void MX_UART5_Init(void);
+static void MX_CRC_Init(void);
 void StartSystemManager(void *argument);
 void StartRMUManager(void *argument);
 void StartGNSSManager(void *argument);
@@ -209,6 +215,7 @@ int main(void)
   MX_SPI1_Init();
   MX_UART4_Init();
   MX_UART5_Init();
+  MX_CRC_Init();
   /* USER CODE BEGIN 2 */
   __HAL_DMA_ENABLE_IT(&hdma_uart5_rx, DMA_IT_TE);
   /* USER CODE END 2 */
@@ -408,6 +415,40 @@ static void MX_CAN1_Init(void)
 }
 
 /**
+  * @brief CRC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CRC_Init(void)
+{
+
+  /* USER CODE BEGIN CRC_Init 0 */
+
+  /* USER CODE END CRC_Init 0 */
+
+  /* USER CODE BEGIN CRC_Init 1 */
+
+  /* USER CODE END CRC_Init 1 */
+  hcrc.Instance = CRC;
+  hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_DISABLE;
+  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_DISABLE;
+  hcrc.Init.GeneratingPolynomial = 4129;
+  hcrc.Init.CRCLength = CRC_POLYLENGTH_16B;
+  hcrc.Init.InitValue = 0;
+  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
+  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
+  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
+  if (HAL_CRC_Init(&hcrc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CRC_Init 2 */
+
+  /* USER CODE END CRC_Init 2 */
+
+}
+
+/**
   * @brief LPUART1 Initialization Function
   * @param None
   * @retval None
@@ -594,10 +635,20 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, SHDN_Pin|PWR_EN_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(IR_ON_OFF_GPIO_Port, IR_ON_OFF_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : SD_CS_Pin */
+  GPIO_InitStruct.Pin = SD_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(SD_CS_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : RXSM_SODS_Pin RXSM_SOE_Pin RXSM_LO_Pin */
   GPIO_InitStruct.Pin = RXSM_SODS_Pin|RXSM_SOE_Pin|RXSM_LO_Pin;
@@ -880,12 +931,34 @@ void StartDataAcquisition(void *argument)
 void StartSDCardManager(void *argument)
 {
   /* USER CODE BEGIN StartSDCardManager */
+
+  // Initialize SD card
+  while (sd_init() != 0) {
+    // Initialization failed, retry after a delay
+    osDelay(100);
+  }
+
   // Wait for SystemManager to start up and set the SD_CARD_STARTUP_FLAG before proceeding
   osThreadFlagsWait(SD_CARD_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
+  
   /* Infinite loop */
+  data_packet_t entry;
   for(;;)
   {
-    osDelay(1);
+    // Wait for next sensor entry
+    osMessageQueueGet(SD_CardQueueHandle, &entry, NULL, osWaitForever);
+
+    // Copy into block buffer
+    memcpy(&sd_block[block_index], &entry, sizeof(data_packet_t));
+    block_index += sizeof(data_packet_t);
+
+    // If block full, write to SD
+    if (block_index >= SD_BLOCK_SIZE) {
+        if (sd_write_block(current_block_addr, sd_block) == 0) {
+          current_block_addr++;
+        }
+        block_index = 0;
+    }
   }
   /* USER CODE END StartSDCardManager */
 }
