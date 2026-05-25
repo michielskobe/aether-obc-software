@@ -1,0 +1,145 @@
+/**
+  ******************************************************************************
+  * @file           : mosaic_x5.c
+  * @brief          : Implementation for mosaic_x5.h
+  * @author         : Kobe Michiels
+  ******************************************************************************
+  * @attention
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+
+/* Includes ------------------------------------------------------------------*/
+#include "mosaic_x5.h"
+#include "nmea.h"
+#include "data_packet.h"
+#include "stm32l4xx_hal.h"
+#include "cmsis_os.h"
+#include <stdio.h>
+#include <string.h>
+
+/* Private typedef -----------------------------------------------------------*/
+
+/* Private define ------------------------------------------------------------*/
+#define GNSS_RX_BUF_SIZE 512
+#define GNSS_LINE_BUF_SIZE 128
+
+/* Private macro -------------------------------------------------------------*/
+
+/* Private variables ---------------------------------------------------------*/
+extern UART_HandleTypeDef huart5;
+extern osThreadId_t GNSSManagerHandle;
+extern osMessageQueueId_t SD_CardQueueHandle;
+
+uint8_t gnss_rx_buf[GNSS_RX_BUF_SIZE];
+volatile uint16_t gnss_rx_size = 0;
+
+/* Private function prototypes -----------------------------------------------*/
+
+/* Private user code ---------------------------------------------------------*/
+
+/* BARE-MINIMUM LINE CONSUMER: Reads lines out of the circular buffer */
+static void gnss_data_parser(void){
+    static char linebuf[GNSS_LINE_BUF_SIZE];
+    static uint16_t line_idx = 0;
+
+    for (uint16_t i = 0; i < gnss_rx_size; i++) {
+        // Read a character from the DMA buffer
+        char c = (char)gnss_rx_buf[i];
+
+        if(c == '\r' || c == '\n') {
+            if(line_idx > 0) {
+                linebuf[line_idx] = '\0';
+                line_idx = 0;
+
+                nmea_data_t nmea;   
+                // Non-NMEA sentences (like command replies) are automatically ignored here             
+                if (nmea_parse_sentence(linebuf, &nmea) == 0) {
+                    data_packet_t p_lat, p_lon, p_alt;
+                    uint32_t tick = osKernelGetTickCount();
+
+                    // Pack timestamps
+                    p_lat.timestamp[0] = p_lon.timestamp[0] = p_alt.timestamp[0] = (tick >> 16) & 0xFF;
+                    p_lat.timestamp[1] = p_lon.timestamp[1] = p_alt.timestamp[1] = (tick >> 8) & 0xFF;
+                    p_lat.timestamp[2] = p_lon.timestamp[2] = p_alt.timestamp[2] = tick & 0xFF;
+
+                    // Pack IDs
+                    p_lat.id = (uint8_t)0x500; 
+                    p_lon.id = (uint8_t)0x501; 
+                    p_alt.id = (uint8_t)0x502;
+
+                    /* Latitude packet: [lat_b2, lat_b1, lat_b0, fix_quality] */
+                    p_lat.data[0] = (nmea.latitude >> 16) & 0xFF;  
+                    p_lat.data[1] = (nmea.latitude >> 8) & 0xFF;
+                    p_lat.data[2] = nmea.latitude & 0xFF;          
+                    p_lat.data[3] = nmea.fix_quality;
+
+                    /* Longitude packet: [lon_b2, lon_b1, lon_b0, satellites] */
+                    p_lon.data[0] = (nmea.longitude >> 16) & 0xFF;
+                    p_lon.data[1] = (nmea.longitude >>  8) & 0xFF;
+                    p_lon.data[2] =  nmea.longitude        & 0xFF;
+                    p_lon.data[3] =  nmea.satellites;
+
+                    /* Altitude packet: [alt_MSB, alt_LSB, hdop_x10, 0x00] */
+                    p_alt.data[0] = (nmea.altitude >> 8) & 0xFF;
+                    p_alt.data[1] =  nmea.altitude       & 0xFF;
+                    p_alt.data[2] =  nmea.hdop_x10;
+                    p_alt.data[3] =  0x00;
+
+                    // Send the data packets to the SD_CardQueue for processing by the SDCardManager thread
+                    osMessageQueuePut(SD_CardQueueHandle, &p_lon, 0, 0);
+                    osMessageQueuePut(SD_CardQueueHandle, &p_lat, 0, 0);
+                    osMessageQueuePut(SD_CardQueueHandle, &p_alt, 0, 0);
+                }
+            }
+        } else {
+            if(line_idx < GNSS_LINE_BUF_SIZE-1) {
+                linebuf[line_idx++] = c;
+            } else {
+                line_idx = 0;
+            }
+        }
+    }
+}
+
+/* Public user code ----------------------------------------------------------*/
+
+void gnss_data_handler(void){
+    // Wait for the flag indicating that new GNSS data is available
+    osThreadFlagsWait(GNSS_DATA_AVAILABLE, osFlagsWaitAny, osWaitForever);
+
+    // Handle the received data
+    gnss_data_parser();
+
+    // Restart the UART DMA for the next batch of data
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart5, gnss_rx_buf, GNSS_RX_BUF_SIZE);
+}
+
+int mosaic_x5_init(void){
+    /* The mosaic-X5 has a boot configuration stored in non-volatile memory that is loaded on power-up.
+     * This boot configuration includes setting the mosaic-X5 to output GGA sentences every 2 seconds on COM1 (setNMEAOutput),
+     * setting the mosaic-X5's receiver dynamics to "Unlimited" (setReceiverDynamics), 
+     *  and setting the mosaic-X5's satellite tracking to "All" (setSatelliteTracking).
+    */
+
+    // Start interrupt-driven receive for NMEA data
+    __HAL_DMA_DISABLE_IT(huart5.hdmarx, DMA_IT_HT);
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart5, gnss_rx_buf, GNSS_RX_BUF_SIZE) != HAL_OK) {
+        return -1; // Initialization failed
+    }
+    
+    return 0; // Initialization successful    
+}
+
+void mosaic_uart_rx_cb(uint16_t size){
+    // Update the global variable with the size of the received data
+    gnss_rx_size = size;
+
+    // Set the flag to indicate that new GNSS data is available for processing
+    osThreadFlagsSet(GNSSManagerHandle, GNSS_DATA_AVAILABLE);
+
+}

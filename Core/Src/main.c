@@ -19,27 +19,25 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include "cmsis_os2.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <string.h>
+#include "data_packet.h"
+#include "mosaic_x5.h"
+
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef struct {
-    uint8_t timestamp[3];  // 24-bit tick
-    uint8_t id;            // sensor id
-    uint8_t data[4];       // payload
-} sensor_entry_t;
 
 typedef struct {
   CAN_RxHeaderTypeDef RxHeader;
   uint8_t RxData[8];
 } can_rx_msg_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -67,6 +65,7 @@ CAN_HandleTypeDef hcan1;
 UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart5;
+DMA_HandleTypeDef hdma_uart5_rx;
 
 SPI_HandleTypeDef hspi1;
 DMA_HandleTypeDef hdma_spi1_rx;
@@ -211,7 +210,7 @@ int main(void)
   MX_UART4_Init();
   MX_UART5_Init();
   /* USER CODE BEGIN 2 */
-
+  __HAL_DMA_ENABLE_IT(&hdma_uart5_rx, DMA_IT_TE);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -231,10 +230,10 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of SD_CardQueue */
-  SD_CardQueueHandle = osMessageQueueNew (128, sizeof(sensor_entry_t), &SD_CardQueue_attributes);
+  SD_CardQueueHandle = osMessageQueueNew (128, sizeof(data_packet_t), &SD_CardQueue_attributes);
 
   /* creation of IridiumQueue */
-  IridiumQueueHandle = osMessageQueueNew (128, sizeof(sensor_entry_t), &IridiumQueue_attributes);
+  IridiumQueueHandle = osMessageQueueNew (128, sizeof(data_packet_t), &IridiumQueue_attributes);
 
   /* creation of CAN_RxQueue */
   CAN_RxQueueHandle = osMessageQueueNew (30, sizeof(can_rx_msg_t), &CAN_RxQueue_attributes);
@@ -560,6 +559,7 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
   /* DMA1_Channel2_IRQn interrupt configuration */
@@ -568,6 +568,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+  /* DMA2_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel2_IRQn);
 
 }
 
@@ -679,6 +682,38 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
   }
 }
 
+/**
+  * @brief  This function handles UART RX event callback for UART5 (Mosaic-X5).
+  * @param  huart: pointer to a UART_HandleTypeDef structure that contains
+  *                the configuration information for the specified UART.
+  * @param  size: number of bytes received in the current UART RX event.
+  * @retval None
+  */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef * huart, uint16_t size){
+  if (huart->Instance == UART5) {
+    mosaic_uart_rx_cb(size);
+  }
+}
+
+/**
+  * @brief  This function handles UART error callback for UART5 (Mosaic-X5).
+  * @param  huart: pointer to a UART_HandleTypeDef structure that contains
+  *                the configuration information for the specified UART.
+  * @retval None
+  */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == UART5)
+    {
+        // Clear error flags by resetting UART reception
+        __HAL_UART_CLEAR_OREFLAG(huart);
+
+        HAL_UART_DMAStop(huart);
+
+        mosaic_x5_init(); // Re-initialize the mosaic-X5 UART reception
+    }
+}
+
 /** 
  * @brief  EXTI line detection callbacks.
  * @param  GPIO_Pin: Specifies the pins connected to corresponding EXTI line
@@ -715,43 +750,15 @@ void StartSystemManager(void *argument)
 {
   /* USER CODE BEGIN 5 */
 
-  // Signal the RMUManager to start up by setting the RMU_STARTUP_FLAG
-  osThreadFlagsSet(RMUManagerHandle, RMU_STARTUP_FLAG);
-
-  // Wait for Lift Off (LO) signal before proceeding.
-  osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
-
-  // TODO: Instruct EPS to power on camera system, UHFCOM, SATCOM, GNSS and IFS
-  SendCANCommand(0x400, (uint8_t[]){0x01}, 1);  // Example command to power on the systems
-
-  // Wait for Start of Data Storage (SODS) signal before proceeding.
-  osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
-
-  // TODO: Instruct camera system to turn on cameras
-  SendCANCommand(0x500, (uint8_t[]){0x01}, 1);  // Example command to turn on cameras
-
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
 
-  // Wait for Start of Experiment (SOE) signal (FFU ejection) before proceeding.
-  osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
-
-  // Terminate RMU Manager Task
-  osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
-
-  // TODO: Provide IFS with ARM and FIRE signals
-  SendCANCommand(0x300, (uint8_t[]){0x01}, 1);  // Example command to provide ARM signal to IFS
-
-  SendCANCommand(0x300, (uint8_t[]){0x02}, 1);  // Example command to provide FIRE signal to IFS
-
-  // Signal the IridiumManager, SDCardManager, and DataAcquisition threads to start up by setting their respective startup flags
-  osThreadFlagsSet(IridiumManagerHandle, IRIDIUM_STARTUP_FLAG);
+ 
+  // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
   osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
-  osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
 
   for (;;)
   {
-    // Monitor pressure and altitude data and send parachute deployment command
     osDelay(1);
   }
   /* USER CODE END 5 */
@@ -800,11 +807,20 @@ void StartRMUManager(void *argument)
 void StartGNSSManager(void *argument)
 {
   /* USER CODE BEGIN StartGNSSManager */
+
   // Wait for SystemManager to start up and set the GNSS_STARTUP_FLAG before proceeding
   osThreadFlagsWait(GNSS_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
+  
+  // Initialize the mosaic-X5 GNSS receiver
+  while (mosaic_x5_init() != 0){
+    osDelay(1);
+  }
+  
   /* Infinite loop */
   for(;;)
   {
+    // Wait for and handle GNSS data
+    gnss_data_handler();
     osDelay(1);
   }
   /* USER CODE END StartGNSSManager */
@@ -824,7 +840,7 @@ void StartDataAcquisition(void *argument)
   osThreadFlagsWait(DATA_ACQ_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
 
   can_rx_msg_t rx_msg;
-  sensor_entry_t entry;
+  data_packet_t entry;
   
   /* Infinite loop */
   for(;;)
@@ -840,7 +856,7 @@ void StartDataAcquisition(void *argument)
           entry.timestamp[2] = tick & 0xFF;
 
           // Use the lower 8 bits of the CAN message's standard ID as the sensor ID for this data packet
-          entry.id = (uint8_t)(rx_msg.RxHeader.StdId & 0xFF);
+          entry.id = (uint8_t)rx_msg.RxHeader.StdId;
 
           // Copy the first 4 bytes of the CAN message data into the data field of the sensor entry
           // TODO: implement a more robust way of handling different types of CAN messages with varying data lengths and formats, based on the sensor ID
