@@ -51,12 +51,21 @@ static void gnss_data_parser(void){
         // Read a character from the DMA buffer
         char c = (char)gnss_rx_buf[i];
 
-        if(c == '\r' || c == '\n') {
-            if(line_idx > 0) {
-                linebuf[line_idx] = '\0';
-                line_idx = 0;
+        // Frame synchronization
+        if (c == '$') {
+            linebuf[0] = '$';
+            line_idx = 1;
+            continue;
+        }
 
-                nmea_data_t nmea;   
+        // If we haven't seen a start delimiter yet, ignore garbage bytes
+        if (line_idx == 0) continue;
+
+        if(c == '\r' || c == '\n') {
+            if(line_idx > 1) {
+                linebuf[line_idx] = '\0';
+
+                nmea_data_t nmea = {0}; // Zero-initialize structure
                 // Non-NMEA sentences (like command replies) are automatically ignored here             
                 if (nmea_parse_sentence(linebuf, &nmea) == 0) {
                     data_packet_t p_lat, p_lon, p_alt;
@@ -96,6 +105,7 @@ static void gnss_data_parser(void){
                     osMessageQueuePut(SD_CardQueueHandle, &p_alt, 0, 0);
                 }
             }
+            line_idx = 0; // Reset for next line
         } else {
             if(line_idx < GNSS_LINE_BUF_SIZE-1) {
                 linebuf[line_idx++] = c;

@@ -60,6 +60,11 @@ static uint32_t nmea_parse_latlon(const char *field, char hemi)
      * Latitude:  DDMM.MMMMM  → 2 degree digits
      * Longitude: DDDMM.MMMMM → 3 degree digits                               
      */
+
+    if (!field || strlen(field) == 0) {
+        return 0; // No fix
+    }
+
     const char *dot = strchr(field, '.');
     if (!dot) {
         return 0; // Invalid format, no decimal point
