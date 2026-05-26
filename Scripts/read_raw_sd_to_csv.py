@@ -25,28 +25,44 @@ def decode_packet(entry_bytes):
     packet_id = entry_bytes[3]
     data = entry_bytes[4:8]
 
-    if packet_id == 0:  # 0x500 truncated to uint8_t
+    if packet_id == 0:  # latitude
+        raw_lat = (data[0] << 16) | (data[1] << 8) | data[2]
+
+        latitude_deg = (
+            raw_lat * (180.0 / 16777216.0)
+        ) - 90.0
+
         return {
             "timestamp": timestamp,
             "type": "latitude",
-            "latitude": (data[0] << 16) | (data[1] << 8) | data[2],
+            "latitude_deg": latitude_deg,
             "fix_quality": data[3],
         }
 
-    elif packet_id == 1:  # 0x501 truncated to uint8_t
+    elif packet_id == 1:  # longitude
+        raw_lon = (data[0] << 16) | (data[1] << 8) | data[2]
+
+        longitude_deg = (
+            raw_lon * (360.0 / 16777216.0)
+        ) - 180.0
+
         return {
             "timestamp": timestamp,
             "type": "longitude",
-            "longitude": (data[0] << 16) | (data[1] << 8) | data[2],
+            "longitude_deg": longitude_deg,
             "satellites": data[3],
         }
 
-    elif packet_id == 2:  # 0x502 truncated to uint8_t
+    elif packet_id == 2:  # altitude
+        raw_alt = (data[0] << 8) | data[1]
+
+        altitude_m = raw_alt * 1.5
+
         return {
             "timestamp": timestamp,
             "type": "altitude",
-            "altitude": (data[0] << 8) | data[1],
-            "hdop_x10": data[2],
+            "altitude_m": altitude_m,
+            "hdop": data[2] / 10.0,
         }
 
     return {
@@ -99,12 +115,12 @@ def save_csv(entries, filename):
         fieldnames = [
             "timestamp",
             "type",
-            "latitude",
-            "longitude",
-            "altitude",
+            "latitude_deg",
+            "longitude_deg",
+            "altitude_m",
             "fix_quality",
             "satellites",
-            "hdop_x10",
+            "hdop",
             "id",
             "raw",
         ]
