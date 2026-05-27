@@ -129,10 +129,15 @@ osMessageQueueId_t IridiumQueueHandle;
 const osMessageQueueAttr_t IridiumQueue_attributes = {
   .name = "IridiumQueue"
 };
-/* Definitions for CAN_RxQueue */
-osMessageQueueId_t CAN_RxQueueHandle;
-const osMessageQueueAttr_t CAN_RxQueue_attributes = {
-  .name = "CAN_RxQueue"
+/* Definitions for SensorDataQueue */
+osMessageQueueId_t SensorDataQueueHandle;
+const osMessageQueueAttr_t SensorDataQueue_attributes = {
+  .name = "SensorDataQueue"
+};
+/* Definitions for TelecommandQueue */
+osMessageQueueId_t TelecommandQueueHandle;
+const osMessageQueueAttr_t TelecommandQueue_attributes = {
+  .name = "TelecommandQueue"
 };
 /* USER CODE BEGIN PV */
 static volatile bool test_scenario = true;
@@ -177,6 +182,13 @@ void StartIridiumManager(void *argument);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/**
+ * @brief Send a CAN command with the specified ID, data, and data length.
+ * @param id: CAN ID
+ * @param data: Pointer to the data to send
+ * @param dlc: Data length (DLC)
+ * @retval None
+ */
 static void SendCANCommand(uint16_t id, const uint8_t *data, uint8_t dlc)
 {
     CAN_TxHeaderTypeDef header = {
@@ -192,6 +204,37 @@ static void SendCANCommand(uint16_t id, const uint8_t *data, uint8_t dlc)
     {
         Error_Handler();
     }
+}
+
+/**
+ * @brief Process a CAN data message and split it into multiple data packets if necessary.
+ *        For payloads > 4 bytes, creates multiple packets with sequentially incremented IDs.
+ * @param rx_msg: Pointer to received CAN message
+ * @param timestamp: 3-byte timestamp array to use for all packets
+ * @param base_id: Base identifier (lower 8 bits of CAN ID)
+ * @retval None
+ */
+static void process_can_data_message(const can_rx_msg_t *rx_msg, const uint8_t *timestamp, uint8_t base_id)
+{
+  uint8_t data_length = rx_msg->RxHeader.DLC;
+  uint8_t packet_count = (data_length <= 4) ? 1 : 2;  // Calculate number of 4-byte packets needed
+  
+  for (uint8_t packet_idx = 0; packet_idx < packet_count; packet_idx++)
+  {
+    data_packet_t packet;
+    
+    memcpy(packet.timestamp, timestamp, 3);
+    packet.id = base_id + packet_idx;
+    
+    uint8_t bytes_to_copy = data_length - (packet_idx * 4);
+    if (bytes_to_copy > 4)
+      bytes_to_copy = 4;
+    
+    memset(packet.data, 0, 4);
+    memcpy(packet.data, &rx_msg->RxData[packet_idx * 4], bytes_to_copy);
+    
+    osMessageQueuePut(SD_CardQueueHandle, &packet, 0, 0);
+  }
 }
 
 /* USER CODE END 0 */
@@ -259,8 +302,11 @@ int main(void)
   /* creation of IridiumQueue */
   IridiumQueueHandle = osMessageQueueNew (128, sizeof(data_packet_t), &IridiumQueue_attributes);
 
-  /* creation of CAN_RxQueue */
-  CAN_RxQueueHandle = osMessageQueueNew (30, sizeof(can_rx_msg_t), &CAN_RxQueue_attributes);
+  /* creation of SensorDataQueue */
+  SensorDataQueueHandle = osMessageQueueNew (128, sizeof(can_rx_msg_t), &SensorDataQueue_attributes);
+
+  /* creation of TelecommandQueue */
+  TelecommandQueueHandle = osMessageQueueNew (16, sizeof(can_rx_msg_t), &TelecommandQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -736,7 +782,8 @@ static void MX_GPIO_Init(void)
  */
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-  // Read the CAN message from the hardware FIFO and put it into the CAN_RxQueue for processing by the DataAcquisition thread
+  // Read the CAN message from the hardware FIFO and put it into the SensorsQueue for processing by the Data Acquisition Task, 
+  // or into the TelecommandQueue for processing by the Command Interface Task, depending on the message ID
   can_rx_msg_t msg;
 
   while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0)
@@ -746,7 +793,18 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
       break;
     }
 
-    osMessageQueuePut(CAN_RxQueueHandle, &msg, 0U, 0U);
+    uint16_t id = msg.RxHeader.StdId;
+
+    // 0x0**
+    if ((id & 0x700) == 0x000)
+    {
+      osMessageQueuePut(TelecommandQueueHandle, &msg, 0, 0);
+    }
+    // 0x5**
+    else if ((id & 0x700) == 0x500)
+    {
+      osMessageQueuePut(SensorsQueueHandle, &msg, 0, 0);
+    }
   }
 }
 
@@ -971,32 +1029,25 @@ void StartDataAcquisition(void *argument)
   osThreadFlagsWait(DATA_ACQ_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
 
   can_rx_msg_t rx_msg;
-  data_packet_t entry;
   
   /* Infinite loop */
   for(;;)
   {
     // Wait for a CAN message to be received and put into the CAN_RxQueue by the RX ISR
-    if (osMessageQueueGet(CAN_RxQueueHandle, &rx_msg, NULL, osWaitForever) == osOK)
-        {
-          // Get the current tick count to use as a timestamp for the data packet
-          uint32_t tick = osKernelGetTickCount();
+    if (osMessageQueueGet(CAN_RxQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
+      // Get the current tick count to use as a timestamp for the data packet
+      uint32_t tick = osKernelGetTickCount();
+      uint8_t timestamp[3];
+      timestamp[0] = (tick >> 16) & 0xFF;
+      timestamp[1] = (tick >> 8)  & 0xFF;
+      timestamp[2] = tick & 0xFF;
 
-          entry.timestamp[0] = (tick >> 16) & 0xFF;
-          entry.timestamp[1] = (tick >> 8)  & 0xFF;
-          entry.timestamp[2] = tick & 0xFF;
+      // Use the lower 8 bits of the CAN message's standard ID as the base sensor ID
+      uint8_t base_id = (uint8_t)(rx_msg.RxHeader.StdId & 0xFF);
 
-          // Use the lower 8 bits of the CAN message's standard ID as the sensor ID for this data packet
-          entry.id = (uint8_t)rx_msg.RxHeader.StdId;
-
-          // Copy the first 4 bytes of the CAN message data into the data field of the sensor entry
-          // TODO: implement a more robust way of handling different types of CAN messages with varying data lengths and formats, based on the sensor ID
-          memcpy(entry.data, rx_msg.RxData, 4);
-
-          // Put the sensor entry into both the SD card queue for processing by the SDCardManager thread
-          osMessageQueuePut(SD_CardQueueHandle, &entry, 0, 0);
-        
-        }
+      // Process the CAN message and queue all resulting data packets
+      process_can_data_message(&rx_msg, timestamp, base_id);  
+    }
   }
   /* USER CODE END StartDataAcquisition */
 }
