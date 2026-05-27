@@ -923,6 +923,9 @@ void StartSystemManager(void *argument)
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
 
+  // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
+  osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
+
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
   // If SOE has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.rxsm_soe == 0){
@@ -943,8 +946,8 @@ void StartSystemManager(void *argument)
     osMutexRelease(sd_mutex_id); 
   }
 
-  // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
-  osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
+  // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
+  osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
 
   for (;;)
   {
