@@ -13,6 +13,21 @@ typedef struct {
     uint8_t data[4];
 } data_packet_t;
 
+typedef struct {
+    uint32_t sequence;
+    uint32_t last_written_sector;
+    uint8_t rxsm_lo;
+    uint8_t rxsm_sods;
+    uint8_t rxsm_soe;
+    uint8_t ffu_ejection;
+    uint8_t cgg1_fire;
+    uint8_t cgg2_fired;
+    uint8_t bw1_fired;
+    uint8_t bw2_fired;
+    uint8_t gnss[8];
+    uint16_t crc;
+} metadata_t;
+
 #ifdef __cplusplus
 }
 #endif

@@ -135,8 +135,10 @@ const osMessageQueueAttr_t CAN_RxQueue_attributes = {
 
 // SD Card private variables
 static uint8_t sd_block[SD_BLOCK_SIZE];
+static uint8_t metadata_sector[SD_BLOCK_SIZE];
 static uint16_t block_index = 0;
 static uint32_t current_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
+static metadata_t mission_metadata = {0};
 
 osMutexId_t sd_mutex_id;  
  
@@ -813,6 +815,22 @@ void StartSystemManager(void *argument)
 {
   /* USER CODE BEGIN 5 */
 
+  // Initialize SD card
+  while (sd_init() != 0) {
+    // Initialization failed, retry after a delay
+    osDelay(100);
+  }
+
+  // Simulate LO signal
+  mission_metadata.rxsm_lo = 0xFF;
+  memset(metadata_sector, 0x00, SD_BLOCK_SIZE);
+  memcpy(metadata_sector, &mission_metadata, sizeof(metadata_t));
+  osMutexAcquire(sd_mutex_id, osWaitForever);
+  sd_write_block(0, metadata_sector);
+  sd_write_block(1, metadata_sector);
+  sd_write_block(2, metadata_sector);
+  osMutexRelease(sd_mutex_id);
+
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
 
@@ -943,12 +961,6 @@ void StartSDCardManager(void *argument)
 {
   /* USER CODE BEGIN StartSDCardManager */ 
 
-  // Initialize SD card
-  while (sd_init() != 0) {
-    // Initialization failed, retry after a delay
-    osDelay(100);
-  }
-
   // Wait for SystemManager to start up and set the SD_CARD_STARTUP_FLAG before proceeding
   osThreadFlagsWait(SD_CARD_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   
@@ -973,7 +985,7 @@ void StartSDCardManager(void *argument)
             }
             osDelay(100);
         }
-        block_index = 0;
+        block_index = 0; 
         osMutexRelease(sd_mutex_id);
     }
   }
