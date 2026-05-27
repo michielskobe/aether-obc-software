@@ -132,9 +132,20 @@ const osMessageQueueAttr_t CAN_RxQueue_attributes = {
   .name = "CAN_RxQueue"
 };
 /* USER CODE BEGIN PV */
+
+// SD Card private variables
 static uint8_t sd_block[SD_BLOCK_SIZE];
 static uint16_t block_index = 0;
 static uint32_t current_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
+
+osMutexId_t sd_mutex_id;  
+ 
+const osMutexAttr_t SD_Card_Mutex_attr = {
+  "SD_CardMutex",                          // human readable mutex name
+   osMutexPrioInherit | osMutexRobust,    // attr_bits
+  NULL,                                     // memory for control block   
+  0U                                        // size for control block
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -225,6 +236,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+  sd_mutex_id = osMutexNew(&SD_Card_Mutex_attr);
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -952,11 +964,17 @@ void StartSDCardManager(void *argument)
     block_index += sizeof(data_packet_t);
 
     // If block full, write to SD
-    if (block_index >= SD_BLOCK_SIZE) {
-        if (sd_write_block(current_block_addr, sd_block) == 0) {
-          current_block_addr++;
+    if (block_index == SD_BLOCK_SIZE) {
+        osMutexAcquire(sd_mutex_id, osWaitForever);
+        for (int i = 0; i < 5; i++) { // Retry up to 5 times if write fails
+            if (sd_write_block(current_block_addr, sd_block) == 0) {
+                current_block_addr++;
+                break;
+            }
+            osDelay(100);
         }
         block_index = 0;
+        osMutexRelease(sd_mutex_id);
     }
   }
   /* USER CODE END StartSDCardManager */
