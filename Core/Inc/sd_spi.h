@@ -24,6 +24,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include <stdint.h>
+#include "data_packet.h"
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -157,6 +158,36 @@ int sd_read_block(uint32_t block_addr, uint8_t *buffer);
 *
 */
 int sd_read_multiple_block(uint32_t start_block_addr, uint8_t *buffer, uint8_t number_of_blocks);
+
+/** 
+ * @brief Write a metadata structure to the SD card, with CRC validation and triple redundancy.
+ *
+* This function writes the provided metadata structure to the first three sectors of the SD card 
+ * (blocks 0, 1, and 2) to ensure redundancy. Each sector will contain an identical copy of the 
+ * metadata along with a CRC for integrity verification.
+ * 
+ * @param[in] metadata Pointer to the metadata structure to be written.
+ * 
+ * @return int
+ *         - 0 on success (all copies written successfully)
+ *         - Negative value on failure (if any copy fails to write)
+ */
+int metadata_write(metadata_t *metadata);
+
+/**
+ * @brief Read the metadata structure from the SD card.
+ * 
+ * This function reads the metadata from the first three sectors of the SD card (blocks 0, 1, and 2),
+ * checks the CRC for each copy, and returns the first valid copy it finds. If multiple
+ * valid copies are found, it can implement a strategy to determine which one to return (e.g., majority voting).
+ *
+ * @param[out] out Pointer to the metadata structure where the read data will be stored.
+ *
+ * @return int
+ *         - 0 on success (metadata read correctly)
+ *         - Negative value on failure
+ */
+int metadata_read(metadata_t *out);
 
 /* Private defines -----------------------------------------------------------*/
 

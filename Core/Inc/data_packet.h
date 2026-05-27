@@ -13,7 +13,7 @@ typedef struct {
     uint8_t data[4];
 } data_packet_t;
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     uint32_t sequence;
     uint32_t last_written_sector;
     uint8_t rxsm_lo;

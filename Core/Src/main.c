@@ -27,7 +27,7 @@
 #include "data_packet.h"
 #include "mosaic_x5.h"
 #include "sd_spi.h"
-
+#include <stdbool.h>
 
 /* USER CODE END Includes */
 
@@ -46,13 +46,16 @@ typedef struct {
 #define RMU_STARTUP_FLAG      (1U << 0)  // 0x0001
 #define GNSS_STARTUP_FLAG     (1U << 1)  // 0x0002
 #define IRIDIUM_STARTUP_FLAG  (1U << 2)  // 0x0004
-#define SD_CARD_STARTUP_FLAG  (1U << 3)  // 0x0008
-#define DATA_ACQ_STARTUP_FLAG (1U << 4)  // 0x0010
-#define LO_FLAG               (1U << 5)  // 0x0020
-#define SODS_FLAG             (1U << 6)  // 0x0040
-#define SOE_FLAG              (1U << 7)  // 0x0080
-#define RMU_SHUTDOWN_FLAG     (1U << 8)  // 0x0100
+#define SD_CARD_INIT_FLAG     (1U << 3)  // 0x0008
+#define SD_CARD_STARTUP_FLAG  (1U << 4)  // 0x0010
+#define DATA_ACQ_STARTUP_FLAG (1U << 5)  // 0x0020
+#define LO_FLAG               (1U << 6)  // 0x0040
+#define SODS_FLAG             (1U << 7)  // 0x0080
+#define SOE_FLAG              (1U << 8)  // 0x0100
+#define FFU_EJECTION_FLAG     (1U << 9)  // 0x0200
+#define RMU_SHUTDOWN_FLAG     (1U << 10) // 0x0400
 
+#define METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -132,10 +135,10 @@ const osMessageQueueAttr_t CAN_RxQueue_attributes = {
   .name = "CAN_RxQueue"
 };
 /* USER CODE BEGIN PV */
+static volatile bool test_scenario = true;
 
 // SD Card private variables
 static uint8_t sd_block[SD_BLOCK_SIZE];
-static uint8_t metadata_sector[SD_BLOCK_SIZE];
 static uint16_t block_index = 0;
 static uint32_t current_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
 static metadata_t mission_metadata = {0};
@@ -814,25 +817,73 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void StartSystemManager(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  // Signal the RMUManager to start up by setting the RMU_STARTUP_FLAG
+  osThreadFlagsSet(RMUManagerHandle, RMU_STARTUP_FLAG);
 
-  // Initialize SD card
-  while (sd_init() != 0) {
-    // Initialization failed, retry after a delay
-    osDelay(100);
+  // Wait until the SD card is initialised and ready
+  osThreadFlagsWait(SD_CARD_INIT_FLAG, osFlagsWaitAny, osWaitForever);
+
+  if (test_scenario){
+    // For testing purposes, if the test_scenario flag is set, then skip waiting for the actual LO/SODS/SOE/ejection signals and just set the mission metadata values to indicate that they have already occurred
+    mission_metadata.rxsm_lo = 0xFF;
+    mission_metadata.rxsm_sods = 0xFF;
+    mission_metadata.rxsm_soe = 0xFF;
+    mission_metadata.ffu_ejection = 0xFF;
+    mission_metadata.last_written_sector = current_block_addr;
+    osMutexAcquire(sd_mutex_id, osWaitForever);
+    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    osMutexRelease(sd_mutex_id);
+  } 
+ 
+  // Read the mission metadata from the SD card and store it in the global mission_metadata variable
+  metadata_read(&mission_metadata);
+  if (mission_metadata.last_written_sector < 3){
+    mission_metadata.last_written_sector = 3; // Ensure that the last written sector is not in the reserved area of the SD card
   }
+  current_block_addr = mission_metadata.last_written_sector ++;
 
-  // Simulate LO signal
-  mission_metadata.rxsm_lo = 0xFF;
-  memset(metadata_sector, 0x00, SD_BLOCK_SIZE);
-  memcpy(metadata_sector, &mission_metadata, sizeof(metadata_t));
-  osMutexAcquire(sd_mutex_id, osWaitForever);
-  sd_write_block(0, metadata_sector);
-  sd_write_block(1, metadata_sector);
-  sd_write_block(2, metadata_sector);
-  osMutexRelease(sd_mutex_id);
+  // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
+  // If LO has already been triggered, then skip waiting and proceed immediately
+  if (mission_metadata.rxsm_lo == 0){
+    osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
+    mission_metadata.rxsm_lo = 0xFF; // Update the mission metadata to indicate that LO has occurred
+    osMutexAcquire(sd_mutex_id, osWaitForever); 
+    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    osMutexRelease(sd_mutex_id); 
+  }
+  
+  // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
+  // If SODS has already been triggered, then skip waiting and proceed immediately
+  if (mission_metadata.rxsm_sods == 0){
+    osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
+    mission_metadata.rxsm_sods = 0xFF; // Update the mission metadata to indicate that SODS has occurred
+    osMutexAcquire(sd_mutex_id, osWaitForever);
+    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    osMutexRelease(sd_mutex_id);
+  }
 
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
+
+  // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
+  // If SOE has already been triggered, then skip waiting and proceed immediately
+  if (mission_metadata.rxsm_soe == 0){
+    osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
+    mission_metadata.rxsm_soe = 0xFF; // Update the mission metadata to indicate that SOE has occurred
+    osMutexAcquire(sd_mutex_id, osWaitForever);
+    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    osMutexRelease(sd_mutex_id); 
+  }
+
+  // Wait for the ejection signal before proceeding with the rest of the system startup sequence
+  // If ejection has already been triggered, then skip waiting and proceed immediately
+  if (mission_metadata.ffu_ejection == 0){
+    osThreadFlagsWait(FFU_EJECTION_FLAG, osFlagsWaitAny, osWaitForever);
+    mission_metadata.ffu_ejection = 0xFF; // Update the mission metadata to indicate that ejection has occurred
+    osMutexAcquire(sd_mutex_id, osWaitForever);
+    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    osMutexRelease(sd_mutex_id); 
+  }
 
   // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
   osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
@@ -929,7 +980,7 @@ void StartDataAcquisition(void *argument)
     if (osMessageQueueGet(CAN_RxQueueHandle, &rx_msg, NULL, osWaitForever) == osOK)
         {
           // Get the current tick count to use as a timestamp for the data packet
-          uint32_t tick = HAL_GetTick();
+          uint32_t tick = osKernelGetTickCount();
 
           entry.timestamp[0] = (tick >> 16) & 0xFF;
           entry.timestamp[1] = (tick >> 8)  & 0xFF;
@@ -942,9 +993,9 @@ void StartDataAcquisition(void *argument)
           // TODO: implement a more robust way of handling different types of CAN messages with varying data lengths and formats, based on the sensor ID
           memcpy(entry.data, rx_msg.RxData, 4);
 
-          // Put the sensor entry into both the SD card queue and the Iridium queue for processing by the respective manager threads
+          // Put the sensor entry into both the SD card queue for processing by the SDCardManager thread
           osMessageQueuePut(SD_CardQueueHandle, &entry, 0, 0);
-          osMessageQueuePut(IridiumQueueHandle, &entry, 0, 0);
+        
         }
   }
   /* USER CODE END StartDataAcquisition */
@@ -960,6 +1011,22 @@ void StartDataAcquisition(void *argument)
 void StartSDCardManager(void *argument)
 {
   /* USER CODE BEGIN StartSDCardManager */ 
+
+  // Initialize SD card
+  while (sd_init() != 0) {
+    // Initialization failed, retry after a delay
+    osDelay(100);
+  }
+
+  // Write a blank block to the first data block address to ensure the SD card is ready for subsequent writes
+  osMutexAcquire(sd_mutex_id, osWaitForever);
+  memset(sd_block, 0x00, SD_BLOCK_SIZE);
+  sd_write_block(current_block_addr, sd_block);
+  current_block_addr++;    
+  osMutexRelease(sd_mutex_id);
+
+  // Signal to SystemOrchestrator that SD card is ready
+  osThreadFlagsSet(SystemManagerHandle, SD_CARD_INIT_FLAG);
 
   // Wait for SystemManager to start up and set the SD_CARD_STARTUP_FLAG before proceeding
   osThreadFlagsWait(SD_CARD_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
@@ -980,6 +1047,11 @@ void StartSDCardManager(void *argument)
         osMutexAcquire(sd_mutex_id, osWaitForever);
         for (int i = 0; i < 5; i++) { // Retry up to 5 times if write fails
             if (sd_write_block(current_block_addr, sd_block) == 0) {
+                if (current_block_addr - mission_metadata.last_written_sector >= METADATA_UPDATE_INTERVAL) {
+                    // Update mission metadata with the new last written sector address
+                    mission_metadata.last_written_sector = current_block_addr;
+                    metadata_write(&mission_metadata);
+                }
                 current_block_addr++;
                 break;
             }

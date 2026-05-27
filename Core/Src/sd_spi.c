@@ -24,6 +24,8 @@
 #include "cmsis_os.h"
 #include "stm32l4xx_hal.h"
 #include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
 
 /* Private typedef -----------------------------------------------------------*/
 
@@ -466,4 +468,89 @@ int sd_read_multiple_block(uint32_t start_block_addr, uint8_t *buffer, uint8_t n
     return_status = sd_read_block(start_block_addr + i, buffer + (i * SD_BLOCK_SIZE)); 
   }
   return return_status == 0? 0 : -1;
+}
+
+int metadata_write(metadata_t *metadata) {
+    // Calculate CRC
+    uint16_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)metadata, sizeof(metadata_t) - sizeof(uint16_t));
+    metadata->crc = crc;
+
+    uint8_t sector[SD_BLOCK_SIZE];
+    memset(sector, 0x00, SD_BLOCK_SIZE);
+    memcpy(sector, metadata, sizeof(metadata_t));
+
+    // Write to all 3 sectors
+    int result = 0;
+    for (int i = 0; i < 3; i++) {
+      result += sd_write_block(i, sector);
+    }
+    return (result == 0) ? 0 : -1; // Return 0 if all writes successful, else -1
+}
+
+int metadata_read(metadata_t *out) {
+    metadata_t copies[3];
+    bool valid[3] = {false, false, false};
+
+    // Read all 3 sectors
+    for (int i = 0; i < 3; i++) {
+        uint8_t sector[SD_BLOCK_SIZE];
+        memset(sector, 0x00, SD_BLOCK_SIZE);
+
+        
+        int result = sd_read_block(i, sector);
+
+        if (result != 0) continue;
+
+        memcpy(&copies[i], sector, sizeof(metadata_t));
+
+        // Validate CRC — compute over all fields except the crc field itself
+        uint16_t computed_crc = HAL_CRC_Calculate(&hcrc, 
+            (uint32_t *)&copies[i], 
+            (sizeof(metadata_t) - sizeof(uint16_t)) / 4); // CRC unit is words
+        
+        if (computed_crc == copies[i].crc) {
+            valid[i] = true;
+        }
+    }
+
+    // Count valid copies
+    int valid_count = valid[0] + valid[1] + valid[2];
+
+    if (valid_count == 0) {
+        return -1; // All copies corrupt
+    }
+
+    if (valid_count == 1) {
+        // Only one valid copy, use it
+        for (int i = 0; i < 3; i++) {
+            if (valid[i]) {
+                *out = copies[i];
+                return 0;
+            }
+        }
+    }
+
+    // Majority voting: find two copies that agree on sequence number
+    for (int i = 0; i < 3; i++) {
+        if (!valid[i]) continue;
+        for (int j = i + 1; j < 3; j++) {
+            if (!valid[j]) continue;
+            if (copies[i].sequence == copies[j].sequence) {
+                *out = copies[i];
+                return 0;
+            }
+        }
+    }
+
+    // No majority — fall back to highest sequence number among valid copies
+    metadata_t *best = NULL;
+    for (int i = 0; i < 3; i++) {
+        if (!valid[i]) continue;
+        if (best == NULL || copies[i].sequence > best->sequence) {
+            best = &copies[i];
+        }
+    }
+
+    *out = *best;
+    return 0;
 }

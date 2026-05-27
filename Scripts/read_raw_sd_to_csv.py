@@ -39,7 +39,7 @@ PROGRESS_FILE = "../Data/last_block.txt"
 #     uint16_t crc;
 # } metadata_t;   
 
-METADATA_STRUCT = ">II8B8sH"
+METADATA_STRUCT = "<II8B8sH"
 METADATA_FIELDS = [
     "sequence",
     "last_written_sector",
@@ -81,8 +81,8 @@ def load_progress():
 # ── Metadata ──────────────────────────────────────────────────────────────────
  
 def compute_crc16(data: bytes) -> int:
-    """CRC-16/CCITT-FALSE — adjust polynomial if your embedded code uses a different one."""
-    crc = 0xFFFF
+    """CRC-16/CCITT, polynomial 0x1021, init 0x0000 — matches STM32 HAL config."""
+    crc = 0x0000  # match hcrc.Init.InitValue = 0
     for byte in data:
         crc ^= byte << 8
         for _ in range(8):
@@ -342,6 +342,7 @@ if __name__ == "__main__":
                 f"looks uninitialized/stale — scanning until empty sectors."
             )
             end_block = None
+
         print(f"\nMission status:")
         print(f"  Sequence number:     {metadata['sequence']}")
         print(f"  Last written sector: {end_block}")
@@ -370,7 +371,7 @@ if __name__ == "__main__":
  
     # 3. Read data sectors
     print()
-    entries = read_sd_raw(SD_DEVICE, start_block=start_block, end_block=end_block)
+    entries = read_sd_raw(SD_DEVICE, start_block=start_block, end_block=None)
  
     # 4. Save final output
     save_csv(entries, OUTPUT_CSV)
