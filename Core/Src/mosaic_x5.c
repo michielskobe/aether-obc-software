@@ -46,6 +46,7 @@ volatile uint16_t gnss_rx_size = 0;
 static void gnss_data_parser(void){
     static char linebuf[GNSS_LINE_BUF_SIZE];
     static uint16_t line_idx = 0;
+    static uint8_t counter = 0;
 
     for (uint16_t i = 0; i < gnss_rx_size; i++) {
         // Read a character from the DMA buffer
@@ -97,11 +98,11 @@ static void gnss_data_parser(void){
                     p_alt.data[0] = (nmea.altitude >> 8) & 0xFF;
                     p_alt.data[1] =  nmea.altitude       & 0xFF;
                     p_alt.data[2] =  nmea.hdop_x10;
-                    p_alt.data[3] =  0x00;
+                    p_alt.data[3] =  counter++; // Just a counter to have some changing data in the last byte for testing. 
 
                     // Send the data packets to the SD_CardQueue for processing by the SDCardManager thread
-                    osMessageQueuePut(SD_CardQueueHandle, &p_lon, 0, 0);
                     osMessageQueuePut(SD_CardQueueHandle, &p_lat, 0, 0);
+                    osMessageQueuePut(SD_CardQueueHandle, &p_lon, 0, 0);
                     osMessageQueuePut(SD_CardQueueHandle, &p_alt, 0, 0);
                 }
             }

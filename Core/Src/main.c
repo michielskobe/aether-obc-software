@@ -134,7 +134,7 @@ const osMessageQueueAttr_t CAN_RxQueue_attributes = {
 /* USER CODE BEGIN PV */
 static uint8_t sd_block[SD_BLOCK_SIZE];
 static uint16_t block_index = 0;
-static uint32_t current_block_addr = 3;
+static uint32_t current_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -804,7 +804,6 @@ void StartSystemManager(void *argument)
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
 
- 
   // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
   osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
 
@@ -930,7 +929,7 @@ void StartDataAcquisition(void *argument)
 /* USER CODE END Header_StartSDCardManager */
 void StartSDCardManager(void *argument)
 {
-  /* USER CODE BEGIN StartSDCardManager */
+  /* USER CODE BEGIN StartSDCardManager */ 
 
   // Initialize SD card
   while (sd_init() != 0) {

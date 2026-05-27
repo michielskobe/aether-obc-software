@@ -72,7 +72,7 @@ def decode_packet(entry_bytes):
         "raw": data.hex(),
     }
 
-def read_sd_raw(device_path, start_block=4):
+def read_sd_raw(device_path, start_block=0):
     global stop_requested, last_block_processed
 
     all_entries = []
@@ -82,15 +82,25 @@ def read_sd_raw(device_path, start_block=4):
         f.seek(start_block * BLOCK_SIZE)
 
         block_num = start_block
+        empty_sector_streak = 0
+
         while True:
-            if stop_requested:
-                break
+            if stop_requested or empty_sector_streak > 10:
+                break # Only stop if we see 10 blank sectors in a row
 
             block = f.read(BLOCK_SIZE)
             print(f"Reading block {block_num}")
             print(block[:32].hex())
-            if not block or all(b == 0x00 for b in block):
-                break  # end of used data
+            if not block:
+                break # Actual physical end of device reached
+
+            if all(b == 0x00 for b in block):
+                empty_sector_streak += 1
+                block_num += 1
+                continue # Skip this empty boot sector and look at the next one!
+
+            # If we find valid data, reset the streak counter
+            empty_sector_streak = 0
 
             num_entries = BLOCK_SIZE // ENTRY_SIZE
             for i in range(num_entries):
@@ -133,7 +143,7 @@ def save_csv(entries, filename):
 
 if __name__ == "__main__":
     # If a temp CSV exists, resume from last block
-    start_block = 4
+    start_block = 0
     entries = []
     if os.path.exists(TEMP_CSV):
         print("Found temp CSV. Resuming from last processed block...")
