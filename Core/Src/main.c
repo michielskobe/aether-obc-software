@@ -803,7 +803,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     // 0x5**
     else if ((id & 0x700) == 0x500)
     {
-      osMessageQueuePut(SensorsQueueHandle, &msg, 0, 0);
+      osMessageQueuePut(SensorDataQueueHandle, &msg, 0, 0);
     }
   }
 }
@@ -1036,8 +1036,8 @@ void StartDataAcquisition(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    // Wait for a CAN message to be received and put into the CAN_RxQueue by the RX ISR
-    if (osMessageQueueGet(CAN_RxQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
+    // Wait for a CAN message to be received and put into the SensorDataQueueHandle by the CAN RX ISR
+    if (osMessageQueueGet(SensorDataQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
       // Get the current tick count to use as a timestamp for the data packet
       uint32_t tick = osKernelGetTickCount();
       uint8_t timestamp[3];
