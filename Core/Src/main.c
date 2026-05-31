@@ -24,25 +24,28 @@
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
+#include "can.h"
+#include "command_interface.h"
+#include "data_acquisition.h"
 #include "data_packet.h"
 #include "mosaic_x5.h"
 #include "sd_spi.h"
-#include <stdbool.h>
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
-typedef struct {
-  CAN_RxHeaderTypeDef RxHeader;
-  uint8_t RxData[8];
-} can_rx_msg_t;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
 #define RMU_STARTUP_FLAG      (1U << 0)  // 0x0001
 #define GNSS_STARTUP_FLAG     (1U << 1)  // 0x0002
 #define IRIDIUM_STARTUP_FLAG  (1U << 2)  // 0x0004
@@ -54,13 +57,20 @@ typedef struct {
 #define SOE_FLAG              (1U << 8)  // 0x0100
 #define FFU_EJECTION_FLAG     (1U << 9)  // 0x0200
 #define RMU_SHUTDOWN_FLAG     (1U << 10) // 0x0400
+#define IFS_WAKEUP_FLAG       (1U << 11) // 0x0800
+#define UHFCOM_WAKEUP_FLAG    (1U << 12) // 0x1000
+#define CS_WAKEUP_FLAG        (1U << 13) // 0x2000
+#define ANTENNA_DEPLOYED_FLAG (1U << 14) // 0x4000
 
 #define METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
-/* USER CODE END PD */
 
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
+#define IFS_3V3_RAIL_ID 0x01
+#define IFS_5V_RAIL_ID 0x02
+#define GNSS_3V3_RAIL_ID 0x04
+#define IRIDIUM_5V_RAIL_ID 0x08
+#define CS_5V_RAIL_ID 0x10
 
+#define ANTENNA_DEPLOY_TIMEOUT_MS 15000 // 15 second time-out to allow antenna deployment before issuing fTPS deployment
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -77,10 +87,10 @@ SPI_HandleTypeDef hspi1;
 DMA_HandleTypeDef hdma_spi1_rx;
 DMA_HandleTypeDef hdma_spi1_tx;
 
-/* Definitions for SystemManager */
-osThreadId_t SystemManagerHandle;
-const osThreadAttr_t SystemManager_attributes = {
-  .name = "SystemManager",
+/* Definitions for SysOrchestrator */
+osThreadId_t SysOrchestratorHandle;
+const osThreadAttr_t SysOrchestrator_attributes = {
+  .name = "SysOrchestrator",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityRealtime,
 };
@@ -119,6 +129,13 @@ const osThreadAttr_t IridiumManager_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
+/* Definitions for CmdInterface */
+osThreadId_t CmdInterfaceHandle;
+const osThreadAttr_t CmdInterface_attributes = {
+  .name = "CmdInterface",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityRealtime,
+};
 /* Definitions for SD_CardQueue */
 osMessageQueueId_t SD_CardQueueHandle;
 const osMessageQueueAttr_t SD_CardQueue_attributes = {
@@ -138,6 +155,11 @@ const osMessageQueueAttr_t SensorDataQueue_attributes = {
 osMessageQueueId_t TelecommandQueueHandle;
 const osMessageQueueAttr_t TelecommandQueue_attributes = {
   .name = "TelecommandQueue"
+};
+/* Definitions for MissionPhaseDataQueue */
+osMessageQueueId_t MissionPhaseDataQueueHandle;
+const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
+  .name = "MissionPhaseDataQueue"
 };
 /* USER CODE BEGIN PV */
 static volatile bool test_scenario = true;
@@ -168,12 +190,13 @@ static void MX_SPI1_Init(void);
 static void MX_UART4_Init(void);
 static void MX_UART5_Init(void);
 static void MX_CRC_Init(void);
-void StartSystemManager(void *argument);
+void StartSystemOrchestrator(void *argument);
 void StartRMUManager(void *argument);
 void StartGNSSManager(void *argument);
 void StartDataAcquisition(void *argument);
 void StartSDCardManager(void *argument);
 void StartIridiumManager(void *argument);
+void StartCommandInterface(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -181,61 +204,6 @@ void StartIridiumManager(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/**
- * @brief Send a CAN command with the specified ID, data, and data length.
- * @param id: CAN ID
- * @param data: Pointer to the data to send
- * @param dlc: Data length (DLC)
- * @retval None
- */
-static void SendCANCommand(uint16_t id, const uint8_t *data, uint8_t dlc)
-{
-    CAN_TxHeaderTypeDef header = {
-        .IDE   = CAN_ID_STD,
-        .StdId = id,
-        .RTR   = CAN_RTR_DATA,
-        .DLC   = dlc
-    };
-
-    uint32_t mailbox;
-
-    if (HAL_CAN_AddTxMessage(&hcan1, &header, (uint8_t *)data, &mailbox) != HAL_OK)
-    {
-        Error_Handler();
-    }
-}
-
-/**
- * @brief Process a CAN data message and split it into multiple data packets if necessary.
- *        For payloads > 4 bytes, creates multiple packets with sequentially incremented IDs.
- * @param rx_msg: Pointer to received CAN message
- * @param timestamp: 3-byte timestamp array to use for all packets
- * @param base_id: Base identifier (lower 8 bits of CAN ID)
- * @retval None
- */
-static void process_can_data_message(const can_rx_msg_t *rx_msg, const uint8_t *timestamp, uint8_t base_id)
-{
-  uint8_t data_length = rx_msg->RxHeader.DLC;
-  uint8_t packet_count = (data_length <= 4) ? 1 : 2;  // Calculate number of 4-byte packets needed
-  
-  for (uint8_t packet_idx = 0; packet_idx < packet_count; packet_idx++)
-  {
-    data_packet_t packet;
-    
-    memcpy(packet.timestamp, timestamp, 3);
-    packet.id = base_id + packet_idx;
-    
-    uint8_t bytes_to_copy = data_length - (packet_idx * 4);
-    if (bytes_to_copy > 4)
-      bytes_to_copy = 4;
-    
-    memset(packet.data, 0, 4);
-    memcpy(packet.data, &rx_msg->RxData[packet_idx * 4], bytes_to_copy);
-    
-    osMessageQueuePut(SD_CardQueueHandle, &packet, 0, 0);
-  }
-}
 
 /* USER CODE END 0 */
 
@@ -308,13 +276,16 @@ int main(void)
   /* creation of TelecommandQueue */
   TelecommandQueueHandle = osMessageQueueNew (16, sizeof(can_rx_msg_t), &TelecommandQueue_attributes);
 
+  /* creation of MissionPhaseDataQueue */
+  MissionPhaseDataQueueHandle = osMessageQueueNew (32, sizeof(can_rx_msg_t), &MissionPhaseDataQueue_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of SystemManager */
-  SystemManagerHandle = osThreadNew(StartSystemManager, NULL, &SystemManager_attributes);
+  /* creation of SysOrchestrator */
+  SysOrchestratorHandle = osThreadNew(StartSystemOrchestrator, NULL, &SysOrchestrator_attributes);
 
   /* creation of RMUManager */
   RMUManagerHandle = osThreadNew(StartRMUManager, NULL, &RMUManager_attributes);
@@ -330,6 +301,9 @@ int main(void)
 
   /* creation of IridiumManager */
   IridiumManagerHandle = osThreadNew(StartIridiumManager, NULL, &IridiumManager_attributes);
+
+  /* creation of CmdInterface */
+  CmdInterfaceHandle = osThreadNew(StartCommandInterface, NULL, &CmdInterface_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -850,13 +824,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   switch (GPIO_Pin)
   {
     case RXSM_LO_Pin:
-      osThreadFlagsSet(SystemManagerHandle, LO_FLAG);
+      osThreadFlagsSet(SysOrchestratorHandle, LO_FLAG);
       break;
     case RXSM_SODS_Pin:
-      osThreadFlagsSet(SystemManagerHandle, SODS_FLAG);
+      osThreadFlagsSet(SysOrchestratorHandle, SODS_FLAG);
       break;
     case RXSM_SOE_Pin:
-      osThreadFlagsSet(SystemManagerHandle, SOE_FLAG);
+      osThreadFlagsSet(SysOrchestratorHandle, SOE_FLAG);
       break;
     default:
       break;
@@ -865,14 +839,14 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartSystemManager */
+/* USER CODE BEGIN Header_StartSystemOrchestrator */
 /**
-  * @brief  Function implementing the SystemManager thread.
+  * @brief  Function implementing the SysOrchestrator thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartSystemManager */
-void StartSystemManager(void *argument)
+/* USER CODE END Header_StartSystemOrchestrator */
+void StartSystemOrchestrator(void *argument)
 {
   /* USER CODE BEGIN 5 */
   // Signal the RMUManager to start up by setting the RMU_STARTUP_FLAG
@@ -908,6 +882,9 @@ void StartSystemManager(void *argument)
     osMutexAcquire(sd_mutex_id, osWaitForever); 
     metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
     osMutexRelease(sd_mutex_id); 
+
+    // Instruct EPS to switch to internal power
+    send_can_command(EPS_BATTERIES_ENABLE_CAN_ID, (uint8_t[]){0x00}, 1); 
   }
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
@@ -918,6 +895,9 @@ void StartSystemManager(void *argument)
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
     osMutexRelease(sd_mutex_id);
+
+    // Instruct EPS to turn on camera system power rail
+    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
   }
 
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
@@ -934,6 +914,10 @@ void StartSystemManager(void *argument)
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
     osMutexRelease(sd_mutex_id); 
+
+    // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
+    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){GNSS_3V3_RAIL_ID}, 1);
+    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
   }
 
   // Wait for the ejection signal before proceeding with the rest of the system startup sequence
@@ -944,6 +928,18 @@ void StartSystemManager(void *argument)
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
     osMutexRelease(sd_mutex_id); 
+
+    // Instruct EPS to turn on Iridium and IFS 5V power rails
+    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
+    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
+
+    // Issue antenna burn-wire ARM signal
+    send_can_command(IFS_ARM_BW1_CAN_ID, (uint8_t[]){0x00}, 1);
+
+    osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, ANTENNA_DEPLOY_TIMEOUT_MS);
+
+    // Issue CGG1 ARM signal
+    send_can_command(IFS_ARM_CGG1_CAN_ID, (uint8_t[]){0x00}, 1);
   }
 
   // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
@@ -1013,7 +1009,6 @@ void StartGNSSManager(void *argument)
   {
     // Wait for and handle GNSS data
     gnss_data_handler();
-    osDelay(1);
   }
   /* USER CODE END StartGNSSManager */
 }
@@ -1038,18 +1033,7 @@ void StartDataAcquisition(void *argument)
   {
     // Wait for a CAN message to be received and put into the SensorDataQueueHandle by the CAN RX ISR
     if (osMessageQueueGet(SensorDataQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
-      // Get the current tick count to use as a timestamp for the data packet
-      uint32_t tick = osKernelGetTickCount();
-      uint8_t timestamp[3];
-      timestamp[0] = (tick >> 16) & 0xFF;
-      timestamp[1] = (tick >> 8)  & 0xFF;
-      timestamp[2] = tick & 0xFF;
-
-      // Use the lower 8 bits of the CAN message's standard ID as the base sensor ID
-      uint8_t base_id = (uint8_t)(rx_msg.RxHeader.StdId & 0xFF);
-
-      // Process the CAN message and queue all resulting data packets
-      process_can_data_message(&rx_msg, timestamp, base_id);  
+      DataAcquisition_ProcessMessage(&rx_msg);
     }
   }
   /* USER CODE END StartDataAcquisition */
@@ -1064,7 +1048,7 @@ void StartDataAcquisition(void *argument)
 /* USER CODE END Header_StartSDCardManager */
 void StartSDCardManager(void *argument)
 {
-  /* USER CODE BEGIN StartSDCardManager */ 
+  /* USER CODE BEGIN StartSDCardManager */
 
   // Initialize SD card
   while (sd_init() != 0) {
@@ -1080,7 +1064,7 @@ void StartSDCardManager(void *argument)
   osMutexRelease(sd_mutex_id);
 
   // Signal to SystemOrchestrator that SD card is ready
-  osThreadFlagsSet(SystemManagerHandle, SD_CARD_INIT_FLAG);
+  osThreadFlagsSet(SysOrchestratorHandle, SD_CARD_INIT_FLAG);
 
   // Wait for SystemManager to start up and set the SD_CARD_STARTUP_FLAG before proceeding
   osThreadFlagsWait(SD_CARD_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
@@ -1136,6 +1120,29 @@ void StartIridiumManager(void *argument)
     osDelay(1);
   }
   /* USER CODE END StartIridiumManager */
+}
+
+/* USER CODE BEGIN Header_StartCommandInterface */
+/**
+* @brief Function implementing the CmdInterface thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartCommandInterface */
+void StartCommandInterface(void *argument)
+{
+  /* USER CODE BEGIN StartCommandInterface */
+  can_rx_msg_t rx_msg;
+
+  /* Infinite loop */
+  for(;;)
+  {
+    // Wait for a CAN message to be received and put into the TelecommandQueue by the CAN RX ISR
+    if (osMessageQueueGet(TelecommandQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
+      CommandInterface_ProcessMessage(&rx_msg);
+    }
+  }
+  /* USER CODE END StartCommandInterface */
 }
 
 /**

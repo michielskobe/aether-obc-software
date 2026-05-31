@@ -35,7 +35,10 @@ enable_language(C ASM)
 add_executable(${CMAKE_PROJECT_NAME}
     Core/Src/sd_spi.c
     Core/Src/mosaic_x5.c
-    Core/Src/nmea.c)
+    Core/Src/nmea.c
+    Core/Src/command_interface.c
+    Core/Src/can.c
+    Core/Src/data_acquisition.c)
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
