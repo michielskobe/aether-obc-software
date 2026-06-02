@@ -48,6 +48,7 @@
 /* USER CODE BEGIN PM */
 #define METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
 #define ANTENNA_DEPLOY_TIMEOUT_MS 20000 // 20 second time-out to allow antenna deployment before issuing fTPS deployment
+#define IFS_5V_ENABLE_TIMEOUT_MS 5000 // 5 second time-out to allow IFS 5V rail to enable before issuing burn-wire signals
 
 /* USER CODE END PM */
 
@@ -223,7 +224,11 @@ int main(void)
   MX_UART5_Init();
   MX_CRC_Init();
   /* USER CODE BEGIN 2 */
+  // Enable UART5 RX DMA interrupt for receiving data from the GNSS module
   __HAL_DMA_ENABLE_IT(&hdma_uart5_rx, DMA_IT_TE);
+  
+  // Initialize the CAN pending command tracking system and mutex
+  can_pending_init();
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -863,7 +868,7 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
 
     // Instruct EPS to switch to internal power
-    send_can_command(EPS_BATTERIES_ENABLE_CAN_ID, (uint8_t[]){0x00}, 1); 
+    send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); 
   }
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
@@ -876,14 +881,8 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id);
 
     // Instruct EPS to turn on camera system power rail
-    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
+    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
   }
-
-  // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
-  osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
-
-  // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
-  osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
 
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
   // If SOE has already been triggered, then skip waiting and proceed immediately
@@ -895,9 +894,15 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
 
     // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
-    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){GNSS_3V3_RAIL_ID}, 1);
-    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
+    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){GNSS_3V3_RAIL_ID}, 1);
+    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
   }
+
+  // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
+  osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
+
+  // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
+  osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
 
   // Wait for the ejection signal before proceeding with the rest of the system startup sequence
   // If ejection has already been triggered, then skip waiting and proceed immediately
@@ -909,16 +914,19 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
 
     // Instruct EPS to turn on Iridium and IFS 5V power rails
-    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
-    send_can_command(EPS_RAIL_ENABLE_CAN_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
+    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
+    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
+
+    // Wait to ensure IFS 5V power rail is enabled before issuing burn-wire signals
+    osThreadFlagsWait(IFS_5V_ENABLED_FLAG, osFlagsWaitAny, IFS_5V_ENABLE_TIMEOUT_MS);
 
     // Issue antenna burn-wire ARM signal
-    send_can_command(IFS_ARM_BW1_CAN_ID, (uint8_t[]){0x00}, 1);
+    send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
 
     osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, ANTENNA_DEPLOY_TIMEOUT_MS);
 
     // Issue CGG1 ARM signal
-    send_can_command(IFS_ARM_CGG1_CAN_ID, (uint8_t[]){0x00}, 1);
+    send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
   }
 
   // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
@@ -1117,9 +1125,13 @@ void StartCommandInterface(void *argument)
   for(;;)
   {
     // Wait for a CAN message to be received and put into the TelecommandQueue by the CAN RX ISR
-    if (osMessageQueueGet(TelecommandQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
+    if (osMessageQueueGet(TelecommandQueueHandle, &rx_msg, NULL, 100) == osOK) {
       CommandInterface_ProcessMessage(&rx_msg);
     }
+
+    /* Retransmit any commands whose reply has not arrived in time */
+    can_pending_retry();
+
   }
   /* USER CODE END StartCommandInterface */
 }

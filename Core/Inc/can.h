@@ -106,6 +106,13 @@ extern "C" {
 
 #define CS_WAKE_UP_CAN_REPLY_ID 0x4BF
 
+/** Maximum number of simultaneously tracked outgoing commands. */
+#define PENDING_CMD_MAX 16
+ 
+/** Time without a reply before the first retransmission (ms). */
+#define PENDING_CMD_TIMEOUT_MS 1000
+
+/* Data structure for received CAN messages, includes both the header and data payload */
 typedef struct {
   CAN_RxHeaderTypeDef RxHeader;
   uint8_t RxData[8];
@@ -119,6 +126,34 @@ typedef struct {
  * @retval None
  */
 void send_can_command(uint16_t id, const uint8_t *data, uint8_t dlc);
+
+/**
+ * @brief  Send a CAN command and register it for timeout-based retry.
+ * @param  cmd_id    CAN ID to transmit.
+ * @param  reply_id  CAN ID expected in reply.
+ * @param  data      Payload bytes.
+ * @param  dlc       Payload length (0–8).
+ */
+void send_can_command_tracked(uint16_t cmd_id, uint16_t reply_id, const uint8_t *data, uint8_t dlc);
+
+/**
+ * @brief  Initialise the pending-command subsystem.
+ *         Call once before the RTOS scheduler starts, or from an init task.
+ */
+void can_pending_init(void);
+
+/**
+ * @brief  Cancel the pending entry whose expected reply matches reply_id.
+ *         Call at the top of CommandInterface_ProcessMessage().
+ */
+void can_pending_clear(uint16_t reply_id);
+ 
+/**
+ * @brief  Scan the pending table and retransmit any timed-out commands.
+ *         Call periodically from the CommandInterface task loop.
+ */
+void can_pending_retry(void);
+
 
 #ifdef __cplusplus
 }

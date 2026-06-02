@@ -61,6 +61,7 @@ extern "C" {
 #define UHFCOM_WAKEUP_FLAG    (1U << 12) // 0x1000
 #define CS_WAKEUP_FLAG        (1U << 13) // 0x2000
 #define ANTENNA_DEPLOYED_FLAG (1U << 14) // 0x4000
+#define IFS_5V_ENABLED_FLAG   (1U << 15) // 0x8000
 
 #define IFS_3V3_RAIL_ID 0x01
 #define IFS_5V_RAIL_ID 0x02
