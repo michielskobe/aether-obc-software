@@ -46,7 +46,27 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
+#define RMU_STARTUP_FLAG      (1U << 0)  // 0x0001
+#define GNSS_STARTUP_FLAG     (1U << 1)  // 0x0002
+#define IRIDIUM_STARTUP_FLAG  (1U << 2)  // 0x0004
+#define SD_CARD_INIT_FLAG     (1U << 3)  // 0x0008
+#define SD_CARD_STARTUP_FLAG  (1U << 4)  // 0x0010
+#define DATA_ACQ_STARTUP_FLAG (1U << 5)  // 0x0020
+#define LO_FLAG               (1U << 6)  // 0x0040
+#define SODS_FLAG             (1U << 7)  // 0x0080
+#define SOE_FLAG              (1U << 8)  // 0x0100
+#define FFU_EJECTION_FLAG     (1U << 9)  // 0x0200
+#define RMU_SHUTDOWN_FLAG     (1U << 10) // 0x0400
+#define IFS_WAKEUP_FLAG       (1U << 11) // 0x0800
+#define UHFCOM_WAKEUP_FLAG    (1U << 12) // 0x1000
+#define CS_WAKEUP_FLAG        (1U << 13) // 0x2000
+#define ANTENNA_DEPLOYED_FLAG (1U << 14) // 0x4000
 
+#define IFS_3V3_RAIL_ID 0x01
+#define IFS_5V_RAIL_ID 0x02
+#define GNSS_3V3_RAIL_ID 0x04
+#define IRIDIUM_5V_RAIL_ID 0x08
+#define CS_5V_RAIL_ID 0x10
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/

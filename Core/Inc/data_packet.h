@@ -20,7 +20,7 @@ typedef struct __attribute__((packed)) {
     uint8_t rxsm_sods;
     uint8_t rxsm_soe;
     uint8_t ffu_ejection;
-    uint8_t cgg1_fire;
+    uint8_t cgg1_fired;
     uint8_t cgg2_fired;
     uint8_t bw1_fired;
     uint8_t bw2_fired;
