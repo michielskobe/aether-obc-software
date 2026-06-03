@@ -26,7 +26,7 @@ typedef struct
     uint32_t reply_id;      /**< CAN ID expected in reply                 */
     uint8_t  data[8];       /**< Copy of the payload                      */
     uint8_t  data_len;      /**< Payload length                           */
-    uint32_t sent_at_ms;    /**< osKernelGetTickCount() at last send      */
+    uint32_t sent_at_tick;  /**< osKernelGetTickCount() at last send      */
     bool     active;        /**< Slot is currently in use                 */
 } PendingCmd_t;
 
@@ -112,13 +112,13 @@ void can_pending_retry(void)
             continue; 
         }
 
-        if ((now - p->sent_at_ms) < PENDING_CMD_TIMEOUT_MS)
+        if ((now - p->sent_at_tick) < pdMS_TO_TICKS(PENDING_CMD_TIMEOUT_MS))
         { 
             continue; 
         }
  
         // Timeout has occurred for this pending command, attempt retry
-        p->sent_at_ms = now;
+        p->sent_at_tick = now;
         send_can_command(p->cmd_id, p->data, p->data_len);
     }
     osMutexRelease(pending_cmd_mutex);
@@ -133,7 +133,7 @@ static void pending_cmd_register(uint16_t cmd_id, uint16_t reply_id, const uint8
             pending_cmds[i].cmd_id     = cmd_id;
             pending_cmds[i].reply_id   = reply_id;
             pending_cmds[i].data_len   = len;
-            pending_cmds[i].sent_at_ms = osKernelGetTickCount();
+            pending_cmds[i].sent_at_tick = osKernelGetTickCount();
             pending_cmds[i].active     = true;
             memcpy(pending_cmds[i].data, data, len);
             return;
