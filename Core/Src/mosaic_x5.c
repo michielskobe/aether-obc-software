@@ -36,6 +36,7 @@ extern UART_HandleTypeDef huart5; // UART handle declared in main.c, used for re
 extern osThreadId_t GNSSManagerHandle; // Declared in main.c, used to set flags from mosaic-X5 data parser
 extern osMessageQueueId_t SD_CardQueueHandle; // Declared in main.c, used to put data packets into the SDCardManager thread for writing to SD card
 extern osMessageQueueId_t IridiumQueueHandle; // Declared in main.c, used to put data packets into the IridiumManager thread for transmission over Iridium
+extern osMessageQueueId_t MissionPhaseDataQueueHandle; // Declared in main.c, used to put data packets into the SystemOrchestrator thread for mission phase management based on altitude
 extern metadata_t mission_metadata; // Declared in main.c, used to store mission metadata such as the latest GNSS coordinates
 uint8_t gnss_rx_buf[GNSS_RX_BUF_SIZE];
 volatile uint16_t gnss_rx_size = 0;
@@ -111,6 +112,9 @@ static void gnss_data_parser(void){
                     osMessageQueuePut(IridiumQueueHandle, &p_lat, 0, 0);
                     osMessageQueuePut(IridiumQueueHandle, &p_lon, 0, 0);
                     osMessageQueuePut(IridiumQueueHandle, &p_alt, 0, 0);
+
+                    // Put altitude packet in the MissionPhaseDataQueue for use in mission phase management by the SystemOrchestrator
+                    osMessageQueuePut(MissionPhaseDataQueueHandle, &p_alt, 0, 0);
 
                     // Reformat the data into a 8-byte payload for the UHFCOM
                     uint8_t gnss_payload[8];
