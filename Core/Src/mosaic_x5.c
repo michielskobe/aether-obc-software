@@ -101,7 +101,7 @@ static void gnss_data_parser(void){
                     p_alt.data[0] = (nmea.altitude >> 8) & 0xFF;
                     p_alt.data[1] =  nmea.altitude & 0xFF;
                     p_alt.data[2] =  nmea.hdop_x10;
-                    p_alt.data[3] =  counter++; // Just a counter to have some changing data in the last byte for testing. 
+                    p_alt.data[3] =  counter++; // Just a counter to have some changing data in the last byte for testing. (TODO: remove)
 
                     // Put the data packets into the SD_CardQueue for processing by the SDCardManager thread
                     osMessageQueuePut(SD_CardQueueHandle, &p_lat, 0, 0);
@@ -114,7 +114,12 @@ static void gnss_data_parser(void){
                     osMessageQueuePut(IridiumQueueHandle, &p_alt, 0, 0);
 
                     // Put altitude packet in the MissionPhaseDataQueue for use in mission phase management by the SystemOrchestrator
-                    osMessageQueuePut(MissionPhaseDataQueueHandle, &p_alt, 0, 0);
+                    can_rx_msg_t msg_alt;
+                    msg_alt.RxHeader.StdId = 0x502; // CAN ID for altitude
+                    msg_alt.RxHeader.DLC = 2;
+                    memset(msg_alt.RxData, 0, sizeof(msg_alt.RxData));
+                    memcpy(msg_alt.RxData, p_alt.data, 2); // Copy the altitude data
+                    osMessageQueuePut(MissionPhaseDataQueueHandle, &msg_alt, 0, 0);
 
                     // Reformat the data into a 8-byte payload for the UHFCOM
                     uint8_t gnss_payload[8];

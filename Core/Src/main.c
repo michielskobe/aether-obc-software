@@ -395,26 +395,51 @@ static void MX_CAN1_Init(void)
   }
   /* USER CODE BEGIN CAN1_Init 2 */
 
-  // Configure CAN filter to receive messages
-  CAN_FilterTypeDef filter = {0};
+  // Configure CAN filter to receive OBC messages
+  CAN_FilterTypeDef obc_filter = {0};
 
-  filter.FilterBank           = 0;
-  filter.FilterMode           = CAN_FILTERMODE_IDMASK;
-  filter.FilterScale          = CAN_FILTERSCALE_32BIT;
+  obc_filter.FilterBank           = 0;
+  obc_filter.FilterMode           = CAN_FILTERMODE_IDMASK;
+  obc_filter.FilterScale          = CAN_FILTERSCALE_32BIT;
 
-  // Target ID: 0x000, shifted left by 5 into the register
-  filter.FilterIdHigh         = (0x000 << 5);   // 0x0000
-  filter.FilterIdLow          = 0x0000;
+  // Target: IDs whose top 3 bits are 0b000 → matches 0x000–0x0FF
+  // 0x000 << 5 places the 11-bit ID into bits [15:5] of the 16-bit register
+  obc_filter.FilterIdHigh         = (0x000 << 5);
+  obc_filter.FilterIdLow          = 0x0000;
 
-  // Mask: only check the top 3 bits of the 11-bit ID (bits 10–8)
-  // 0x700 << 5 = 0xE000 -> forces bits 10/9/8 to match (must be 0)
-  filter.FilterMaskIdHigh     = (0x700 << 5);   // 0xE000
-  filter.FilterMaskIdLow      = 0x0000;
+  // Mask: 0x700 << 5 = 0xE000 — only bits [15:13] of the register are checked,
+  // corresponding to CAN ID bits [10:8]. Bits [7:0] are don't-care.
+  obc_filter.FilterMaskIdHigh     = (0x700 << 5);
+  obc_filter.FilterMaskIdLow      = 0x0000;
 
-  filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
-  filter.FilterActivation     = ENABLE;
+  obc_filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+  obc_filter.FilterActivation     = ENABLE;
 
-  if (HAL_CAN_ConfigFilter(&hcan1, &filter) != HAL_OK)
+  // Configure CAN filter to receive data messages
+  CAN_FilterTypeDef data_filter = {0};
+
+  data_filter.FilterBank           = 1;
+  data_filter.FilterMode           = CAN_FILTERMODE_IDMASK;
+  data_filter.FilterScale          = CAN_FILTERSCALE_32BIT;
+
+  // Target: IDs whose top 3 bits are 0b101 → matches 0x500–0x5FF
+  // 0x500 << 5 places the 11-bit ID into bits [15:5] of the 16-bit register
+  data_filter.FilterIdHigh         = (0x500 << 5);
+  data_filter.FilterIdLow          = 0x0000;
+
+  // Same mask as obc_filter — only top 3 bits of the incoming ID are compared
+  data_filter.FilterMaskIdHigh     = (0x700 << 5);
+  data_filter.FilterMaskIdLow      = 0x0000;
+
+  data_filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+  data_filter.FilterActivation     = ENABLE;
+
+  if (HAL_CAN_ConfigFilter(&hcan1, &obc_filter) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  if (HAL_CAN_ConfigFilter(&hcan1, &data_filter) != HAL_OK)
   {
       Error_Handler();
   }
@@ -762,6 +787,10 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     else if ((id & 0x700) == 0x500)
     {
       osMessageQueuePut(SensorDataQueueHandle, &msg, 0, 0);
+      if (id == 0x507 || id == 0x517 || id == 0x518) // If the message is a mission phase data message, also put it into the MissionPhaseDataQueue for processing by the System Orchestrator Task
+      {
+        osMessageQueuePut(MissionPhaseDataQueueHandle, &msg, 0, 0);
+      }
     }
   }
 }
