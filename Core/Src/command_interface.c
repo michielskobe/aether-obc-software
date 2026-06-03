@@ -193,15 +193,7 @@ static void HandleEpsChargingDisableReply(const can_rx_msg_t *msg)
 
 static void HandleEpsRailEnableReply(const can_rx_msg_t *msg)
 {
-    if (msg->RxData[0] == 0xFF) // Rail enabled successfully
-    {
-        if (msg->RxData[1] == IFS_5V_RAIL_ID)
-        {
-            // If the IFS 5V rail was enabled, set the IFS_5V_ENABLED_FLAG to allow the system startup sequence to proceed with burn-wire commands
-            osThreadFlagsSet(SysOrchestratorHandle, IFS_5V_ENABLED_FLAG);  
-        }
-    }
-    else if (msg->RxData[0] == 0x00) // Rail enabled NOK - retry command
+    if (msg->RxData[0] == 0x00) // Rail enabled NOK - retry command
     {
         send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, &msg->RxData[1], 1);
     }
@@ -244,17 +236,39 @@ static void HandleIfsArmBw1Reply(const can_rx_msg_t *msg)
         // Burn wire armed successfully, advance to FIRE
         send_can_command_tracked(IFS_FIRE_BW1_CAN_ID, IFS_FIRE_BW1_CAN_REPLY_ID, CMD_DATA, 1);
     }
-    else if (msg->RxData[0] == 0x00) // ARM command NOK - retry command
+    else if (msg->RxData[0] == 0x00) // ARM command NOK
     {
-        send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that BW1 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.bw1_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 
 static void HandleIfsFireBw1Reply(const can_rx_msg_t *msg)
 {
-    if (msg->RxData[0] == 0x00) // FIRE command NOK - retry sequence starting from ARM
+    if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
-        send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that BW1 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.bw1_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 
@@ -265,17 +279,39 @@ static void HandleIfsArmBw2Reply(const can_rx_msg_t *msg)
         // Burn wire armed successfully, advance to FIRE
         send_can_command_tracked(IFS_FIRE_BW2_CAN_ID, IFS_FIRE_BW2_CAN_REPLY_ID, CMD_DATA, 1);
     }
-    else if (msg->RxData[0] == 0x00) // ARM command NOK - retry command
+    else if (msg->RxData[0] == 0x00) // ARM command NOK
     {
-        send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that BW2 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.bw2_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 
 static void HandleIfsFireBw2Reply(const can_rx_msg_t *msg)
 {
-    if (msg->RxData[0] == 0x00) // FIRE command NOK - retry sequence starting from ARM
+    if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
-        send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that BW2 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.bw2_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 
@@ -286,17 +322,39 @@ static void HandleIfsArmCgg1Reply(const can_rx_msg_t *msg)
         // CGG1 armed successfully, advance to FIRE
         send_can_command_tracked(IFS_FIRE_CGG1_CAN_ID, IFS_FIRE_CGG1_CAN_REPLY_ID, CMD_DATA, 1);
     }
-    else if (msg->RxData[0] == 0x00) // ARM command NOK - retry command
+    else if (msg->RxData[0] == 0x00) // ARM command NOK
     {
-        send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that CGG1 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.cgg1_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 
 static void HandleIfsFireCgg1Reply(const can_rx_msg_t *msg)
 {
-    if (msg->RxData[0] == 0x00) // FIRE command NOK - retry sequence starting from ARM
+    if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
-        send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that CGG1 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.cgg1_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 
@@ -307,17 +365,39 @@ static void HandleIfsArmCgg2Reply(const can_rx_msg_t *msg)
         // CGG2 armed successfully, advance to FIRE
         send_can_command_tracked(IFS_FIRE_CGG2_CAN_ID, IFS_FIRE_CGG2_CAN_REPLY_ID, CMD_DATA, 1);
     }
-    else if (msg->RxData[0] == 0x00) // ARM command NOK - retry command
+    else if (msg->RxData[0] == 0x00) // ARM command NOK
     {
-        send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that CGG2 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.cgg2_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 
 static void HandleIfsFireCgg2Reply(const can_rx_msg_t *msg)
 {
-    if (msg->RxData[0] == 0x00) // FIRE command NOK - retry sequence starting from ARM
+    if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
-        send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, CMD_DATA, 1);
+        if (msg->RxData[1][0] || msg->RxData[1][1]) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
+        {
+            send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, CMD_DATA, 1);
+        }
+        else if (msg->RxData[1][2]) // Bit 2 indicates ActuatorSpent - if set, do not retry ARM command and log the spent state
+        {
+            // Update mission metadata to indicate that CGG2 is spent, and write the updated mission metadata back to the SD card
+            osMutexAcquire(sd_mutex_id, osWaitForever);
+            mission_metadata.cgg2_fired = 0xFF;
+            metadata_write(&mission_metadata);
+            osMutexRelease(sd_mutex_id);
+        }
     }
 }
 

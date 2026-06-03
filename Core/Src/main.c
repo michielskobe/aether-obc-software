@@ -855,16 +855,18 @@ void StartSystemOrchestrator(void *argument)
   metadata_read(&mission_metadata);
   if (mission_metadata.last_written_sector < 3){
     mission_metadata.last_written_sector = 3; // Ensure that the last written sector is not in the reserved area of the SD card
+  } else if (mission_metadata.last_written_sector > 3){
+    current_block_addr = mission_metadata.last_written_sector ++; // Set the current block address to the next block after the last written sector
   }
-  current_block_addr = mission_metadata.last_written_sector ++;
 
   // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
   // If LO has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.rxsm_lo == 0){
     osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
-    mission_metadata.rxsm_lo = 0xFF; // Update the mission metadata to indicate that LO has occurred
+    // Set the rxsm_lo field in the mission metadata to 0xFF to indicate that LO has occurred, and write the updated mission metadata back to the SD card
+    mission_metadata.rxsm_lo = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever); 
-    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id); 
 
     // Instruct EPS to switch to internal power
@@ -875,9 +877,10 @@ void StartSystemOrchestrator(void *argument)
   // If SODS has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.rxsm_sods == 0){
     osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
-    mission_metadata.rxsm_sods = 0xFF; // Update the mission metadata to indicate that SODS has occurred
+    // Set the rxsm_sods field in the mission metadata to 0xFF to indicate that SODS has occurred, and write the updated mission metadata back to the SD card
+    mission_metadata.rxsm_sods = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
-    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id);
 
     // Instruct EPS to turn on camera system power rail
@@ -888,9 +891,10 @@ void StartSystemOrchestrator(void *argument)
   // If SOE has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.rxsm_soe == 0){
     osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
-    mission_metadata.rxsm_soe = 0xFF; // Update the mission metadata to indicate that SOE has occurred
+    // Set the rxsm_soe field in the mission metadata to 0xFF to indicate that SOE has occurred, and write the updated mission metadata back to the SD card
+    mission_metadata.rxsm_soe = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
-    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id); 
 
     // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
@@ -908,17 +912,15 @@ void StartSystemOrchestrator(void *argument)
   // If ejection has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.ffu_ejection == 0){
     osThreadFlagsWait(FFU_EJECTION_FLAG, osFlagsWaitAny, osWaitForever);
-    mission_metadata.ffu_ejection = 0xFF; // Update the mission metadata to indicate that ejection has occurred
+    // Set the ffu_ejection field in the mission metadata to 0xFF to indicate that ejection has occurred, and write the updated mission metadata back to the SD card
+    mission_metadata.ffu_ejection = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
-    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
+    metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id); 
 
     // Instruct EPS to turn on Iridium and IFS 5V power rails
     send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
     send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
-
-    // Wait to ensure IFS 5V power rail is enabled before issuing burn-wire signals
-    osThreadFlagsWait(IFS_5V_ENABLED_FLAG, osFlagsWaitAny, IFS_5V_ENABLE_TIMEOUT_MS);
 
     // Issue antenna burn-wire ARM signal
     send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
