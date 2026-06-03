@@ -106,6 +106,10 @@ extern "C" {
 
 #define CS_WAKE_UP_CAN_REPLY_ID 0x4BF
 
+/* Data CAN IDs */
+#define GNSS_POSITION_CAN_ID 0x503
+
+
 /** Maximum number of simultaneously tracked outgoing commands. */
 #define PENDING_CMD_MAX 16
  

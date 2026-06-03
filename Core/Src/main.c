@@ -1073,7 +1073,7 @@ void StartSDCardManager(void *argument)
         for (int i = 0; i < 5; i++) { // Retry up to 5 times if write fails
             if (sd_write_block(current_block_addr, sd_block) == 0) {
                 if (current_block_addr - mission_metadata.last_written_sector >= METADATA_UPDATE_INTERVAL) {
-                    // Update mission metadata with the new last written sector address
+                    // Update mission metadata with the new last written sector address (and updated GNSS data)
                     mission_metadata.last_written_sector = current_block_addr;
                     metadata_write(&mission_metadata);
                 }
