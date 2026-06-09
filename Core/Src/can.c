@@ -73,11 +73,8 @@ void send_can_command(uint16_t id, const uint8_t *data, uint8_t dlc)
 
 void send_can_command_tracked(uint16_t cmd_id, uint16_t reply_id, const uint8_t *data, uint8_t dlc)
 {
-    /* Transmit before registering so the slot is live immediately */
-    send_can_command(cmd_id, data, dlc);
-    osMutexAcquire(pending_cmd_mutex, osWaitForever);
     pending_cmd_register(cmd_id, reply_id, data, dlc);
-    osMutexRelease(pending_cmd_mutex);
+    send_can_command(cmd_id, data, dlc);
 }
 
 void can_pending_init(void)
@@ -94,6 +91,7 @@ void can_pending_clear(uint16_t reply_id)
         if (pending_cmds[i].active && pending_cmds[i].reply_id == reply_id)
         {
             pending_cmds[i].active = false;
+            osMutexRelease(pending_cmd_mutex);
             return;
         }
     }
@@ -103,6 +101,11 @@ void can_pending_clear(uint16_t reply_id)
 void can_pending_retry(void)
 {
     uint32_t now = osKernelGetTickCount();
+
+    // Snapshot timed-out commands while holding the mutex, then send outside the lock
+    typedef struct { uint16_t cmd_id; uint8_t data[8]; uint8_t data_len; } RetryItem;
+    RetryItem to_retry[PENDING_CMD_MAX];
+    int retry_count = 0;
     
     osMutexAcquire(pending_cmd_mutex, osWaitForever);
     for (int i = 0; i < PENDING_CMD_MAX; i++)
@@ -119,15 +122,24 @@ void can_pending_retry(void)
             continue; 
         }
  
-        // Timeout has occurred for this pending command, attempt retry
+        // Timeout has occurred for this pending command, update timestamp and create retry item
         p->sent_at_tick = now;
-        send_can_command(p->cmd_id, p->data, p->data_len);
+        to_retry[retry_count].cmd_id   = p->cmd_id;
+        to_retry[retry_count].data_len = p->data_len;
+        memcpy(to_retry[retry_count].data, p->data, p->data_len);
+        retry_count++;
     }
     osMutexRelease(pending_cmd_mutex);
+
+    for (int i = 0; i < retry_count; i++)
+    {
+        send_can_command(to_retry[i].cmd_id, to_retry[i].data, to_retry[i].data_len);
+    }
 }
 
 static void pending_cmd_register(uint16_t cmd_id, uint16_t reply_id, const uint8_t *data, uint8_t len)
 {
+    osMutexAcquire(pending_cmd_mutex, osWaitForever);
     for (int i = 0; i < PENDING_CMD_MAX; i++)
     {
         if (!pending_cmds[i].active)
@@ -138,10 +150,11 @@ static void pending_cmd_register(uint16_t cmd_id, uint16_t reply_id, const uint8
             pending_cmds[i].sent_at_tick = osKernelGetTickCount();
             pending_cmds[i].active     = true;
             memcpy(pending_cmds[i].data, data, len);
+            osMutexRelease(pending_cmd_mutex);
             return;
         }
     }
-    /* Table full: command was already sent but won't be retried.
-       Increase PENDING_CMD_MAX if this occurs in practice. */
+    osMutexRelease(pending_cmd_mutex);
+    /* Table full: command was already sent but won't be retried. Increase PENDING_CMD_MAX if this occurs in practice. */
 }
 
