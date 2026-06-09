@@ -26,7 +26,7 @@
 /* Private macro -------------------------------------------------------------*/
 
 /* Private variables ---------------------------------------------------------*/
-extern osMessageQueueId_t SD_CardQueueHandle;
+extern osMessageQueueId_t SD_CardQueueHandle; // Declared in main.c
 
 /* Private function prototypes -----------------------------------------------*/
 
@@ -43,6 +43,10 @@ extern osMessageQueueId_t SD_CardQueueHandle;
 static void process_can_data_message(const can_rx_msg_t *rx_msg, const uint8_t *timestamp, uint8_t base_id)
 {
   uint8_t data_length = rx_msg->RxHeader.DLC;
+  if (data_length > 8)
+  {
+    return; // Reject malformed frames
+  }
   uint8_t packet_count = (data_length <= 4) ? 1 : 2;  // Calculate number of 4-byte packets needed
   
   for (uint8_t packet_idx = 0; packet_idx < packet_count; packet_idx++)
@@ -50,11 +54,11 @@ static void process_can_data_message(const can_rx_msg_t *rx_msg, const uint8_t *
     data_packet_t packet;
     
     memcpy(packet.timestamp, timestamp, 3);
+
     packet.id = base_id + packet_idx;
     
     uint8_t bytes_to_copy = data_length - (packet_idx * 4);
-    if (bytes_to_copy > 4)
-      bytes_to_copy = 4;
+    if (bytes_to_copy > 4) {bytes_to_copy = 4;}
     
     memset(packet.data, 0, 4);
     memcpy(packet.data, &rx_msg->RxData[packet_idx * 4], bytes_to_copy);
@@ -64,20 +68,23 @@ static void process_can_data_message(const can_rx_msg_t *rx_msg, const uint8_t *
 }
 
 /* Public user code ---------------------------------------------------------*/
+
 void DataAcquisition_ProcessMessage(const can_rx_msg_t *msg) {
-    // Get the current tick count to use as a timestamp for the data packet
-      uint32_t tick = osKernelGetTickCount();
+  if (msg == NULL) {return;}
 
-      uint8_t timestamp[3] = 
-      {
-          (tick >> 16) & 0xFF,
-          (tick >> 8)  & 0xFF,
-          tick & 0xFF
-      };
+  // Get the current tick count to use as a timestamp for the data packet
+    uint32_t tick = osKernelGetTickCount();
 
-      // Use the lower 8 bits of the CAN message's standard ID as the base sensor ID
-      uint8_t base_id = (uint8_t)(msg->RxHeader.StdId & 0xFF);
+    uint8_t timestamp[3] = 
+    {
+        (tick >> 16) & 0xFF,
+        (tick >> 8)  & 0xFF,
+        tick & 0xFF
+    };
 
-      // Process the CAN message and queue all resulting data packets
-      process_can_data_message(msg, timestamp, base_id);  
+    // Use the lower 8 bits of the CAN message's standard ID as the base sensor ID
+    uint8_t base_id = (uint8_t)(msg->RxHeader.StdId & 0xFF);
+
+    // Process the CAN message and queue all resulting data packets
+    process_can_data_message(msg, timestamp, base_id);  
 }
