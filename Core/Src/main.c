@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
@@ -49,6 +50,12 @@
 #define METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
 #define ANTENNA_DEPLOY_TIMEOUT_MS 20000 // 20 second time-out to allow antenna deployment before issuing fTPS deployment
 #define IFS_5V_ENABLE_TIMEOUT_MS 5000 // 5 second time-out to allow IFS 5V rail to enable before issuing burn-wire signals
+
+#define MANIFOLD_PRESSURE_THRESHOLD 0 /* TODO: define */
+#define ALTIMETER_PRESSURE_THRESHOLD 0 /* TODO: define */
+#define ALTITUDE_THRESHOLD 0 /* TODO: define */
+#define LANDED_ALTITUDE_THRESHOLD 0 /* TODO: define */
+#define LANDED_ACCEL_THRESHOLD 0 /* TODO: define */
 
 /* USER CODE END PM */
 
@@ -963,9 +970,79 @@ void StartSystemOrchestrator(void *argument)
   // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
   osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
 
+  can_rx_msg_t rx_msg;
+  float altitude = MAXFLOAT;
+  float altimeter_pressure = 0;
+  float manifold_pressure = MAXFLOAT; 
+  float accel = MAXFLOAT;
+
   for (;;)
   {
-    osDelay(1);
+    if (osMessageQueueGet(MissionPhaseDataQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
+      switch (rx_msg.RxHeader.StdId)
+      {
+        case 0x502: // Altitude data
+        {
+          uint16_t altitude_raw = (rx_msg.RxData[0] << 8) | rx_msg.RxData[1];
+          altitude = altitude_raw * 1.5f; // Convert raw value to altitude in meters
+          break;
+        }
+        case 0x507: // Altimeter data
+        {
+          uint32_t altimeter_raw = (rx_msg.RxData[0] << 24) | (rx_msg.RxData[1] << 16) | (rx_msg.RxData[2] << 8) | rx_msg.RxData[3];
+          altimeter_pressure = altimeter_raw * 10; // Convert raw value to pressure in kPa
+          break;
+        }
+        case 0x517: // Manifold pressure data
+        {
+          uint16_t manifold_raw = (rx_msg.RxData[0] << 8) | rx_msg.RxData[1];
+          // Convert raw value to voltage, then to pressure in kPa
+          float vout = manifold_raw * (4.95f / 4096.0f);
+          manifold_pressure = ((vout / 5.0f) - 0.04f) / 0.0012858f;
+          break;
+        }
+        case 0x518: // Acceleration data
+        {
+          // TODO: parse acceleration once IMU settings are known
+          break;
+        }
+        default:
+          break;
+      }
+
+      // ── State machine ──────────────────────────────────────────────
+
+      // 1. Manifold pressure drop → fire CGG2
+      if (!mission_metadata.cgg2_fired && manifold_pressure <= MANIFOLD_PRESSURE_THRESHOLD)
+      {
+        // Issue CGG2 ARM signal
+        send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+      }
+
+      // 2. Altimeter + altitude thresholds crossed → deploy parachute
+      if (!mission_metadata.bw2_fired && altimeter_pressure >= ALTIMETER_PRESSURE_THRESHOLD && altitude <= ALTITUDE_THRESHOLD)
+      {
+        send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+      }
+
+      // 3. Parachute open → fire CGG2 if not already fired
+      if (mission_metadata.bw2_fired && !mission_metadata.cgg2_fired)
+      {
+        // Issue CGG2 ARM signal
+        send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+      }
+
+      // 4. Landing detected (low altitude + low acceleration) → power off all except OBC + UHFCOM
+      if (altitude <= LANDED_ALTITUDE_THRESHOLD && accel <= LANDED_ACCEL_THRESHOLD)
+      {
+        send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
+        send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
+        send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
+
+        // Enable beacon mode
+        send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+      }
+    }
   }
   /* USER CODE END 5 */
 }

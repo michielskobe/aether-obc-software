@@ -474,6 +474,11 @@ static void HandleIfsFireDecay(const can_rx_msg_t *msg)
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
     osMutexRelease(sd_mutex_id);
+
+    if (mission_metadata.cgg1_fired && mission_metadata.cgg2_fired && mission_metadata.bw1_fired && mission_metadata.bw2_fired)
+    {
+        send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
+    }
 }
 
 /* ── UHFCOM handlers ────────────────────────────────────────────────────── */
