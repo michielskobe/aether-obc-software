@@ -151,9 +151,13 @@ int transmit_data_packet(uint8_t *data_token, uint8_t *data, uint8_t *crc);
 * @param[out] buffer      Pointer to a 512-byte buffer where the read data
 *                         will be stored.
 *
+* @return int
+*         - 0 on success
+*         - Negative value on failure
+*
 * @see sd_read_block()
 */
-void read_data_packet(uint8_t *buffer);
+int read_data_packet(uint8_t *buffer);
 
 /**
 * @brief Calculate the CRC7 for a given data buffer.
@@ -188,9 +192,12 @@ uint8_t sd_send_cmd(const uint8_t *cmd, uint8_t *resp, uint8_t resp_len){
 
   // Wait for R1 response
   uint8_t r1 = 0xFF;
+  int retries = 100;
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &r1, 1, HAL_MAX_DELAY);
-  } while (r1 == 0xFF);
+  } while (r1 == 0xFF && --retries > 0);
+
+  if (retries == 0) { sd_deselect(); return 0xFF; } // timeout error
 
   resp[0] = r1;
 
@@ -208,7 +215,7 @@ uint8_t sd_send_cmd(const uint8_t *cmd, uint8_t *resp, uint8_t resp_len){
 uint8_t sd_send_acmd(const uint8_t *cmd, uint8_t *resp, uint8_t resp_len){
   uint8_t cmd55_resp[1];
   if (sd_send_cmd(cmd55, cmd55_resp, 1) != 0x01) {
-    return -1; // CMD55 failed
+    return 0xFF; // CMD55 failed
   }
 
   // Send ACMD command
@@ -241,19 +248,28 @@ int transmit_data_packet(uint8_t *data_token, uint8_t *data, uint8_t *crc){
 
   // Wait busy
   uint8_t busy;
+  int retries = 100;
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &busy, 1, HAL_MAX_DELAY);
-  } while (busy == 0x00);
+  } while (busy == 0x00 && --retries > 0);
+
+  if (retries == 0) { return -1; } // Timeout error
 
   return 0; // Data Packet transmission successful
 }
 
-void read_data_packet(uint8_t *buffer){
+int read_data_packet(uint8_t *buffer){
   // Detect valid data token
-  uint8_t data_token;
+  uint8_t data_token = 0xFF;
+  int retries = 100;
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &data_token, 1, HAL_MAX_DELAY);
-  } while (data_token != 0xFE);
+      if (data_token != 0xFF && data_token != 0xFE) {
+        return -1; // Error token received (0x01–0x1F range)
+      }
+  } while (data_token == 0xFF && --retries > 0); 
+
+  if (data_token != 0xFE) { return -1; } // Timeout or wrong token
 
   // Receive the following data field
   HAL_SPI_Receive_DMA(&hspi1, buffer, SD_BLOCK_SIZE);
@@ -266,6 +282,8 @@ void read_data_packet(uint8_t *buffer){
   // Receives CRC
   uint8_t crc[2];
   HAL_SPI_Receive(&hspi1, crc, 2, HAL_MAX_DELAY);
+
+  return 0;
 }
 
 uint8_t crc7_sd(const uint8_t *data, int len){
@@ -335,9 +353,9 @@ int sd_init(void){
   }
 
   // Initialization commands successful, set SPI clock to higher speed for data transfer
-  if (HAL_SPI_DeInit(&hspi1) != HAL_OK){Error_Handler();}
+  HAL_SPI_DeInit(&hspi1);
   hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4; // 20 MHz SPI clock
-  if (HAL_SPI_Init(&hspi1) != HAL_OK){Error_Handler();}
+  HAL_SPI_Init(&hspi1);
 
   return 0; // Initialization successful
 }
@@ -363,7 +381,7 @@ int sd_write_block(uint32_t block_addr, uint8_t *data){
   }
 
   // Calculate CRC
-  uint16_t data_crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)data, SD_BLOCK_SIZE);
+  uint16_t data_crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)data, SD_BLOCK_SIZE/4);
   uint8_t crc_bytes[2];
   crc_bytes[0] = (data_crc >> 8) & 0xFF;
   crc_bytes[1] = data_crc & 0xFF;
@@ -403,7 +421,7 @@ int sd_write_multiple_block(uint32_t start_block_addr, uint8_t *data, uint8_t nu
   
   for (int i = 0; i < number_of_blocks; i++){
     // Calculate CRC
-    uint16_t data_crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)data + (i * SD_BLOCK_SIZE), SD_BLOCK_SIZE);
+    uint16_t data_crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)(data + (i * SD_BLOCK_SIZE)), SD_BLOCK_SIZE/4);
     uint8_t crc_bytes[2];
     crc_bytes[0] = (data_crc >> 8) & 0xFF;
     crc_bytes[1] = data_crc & 0xFF;
@@ -420,9 +438,10 @@ int sd_write_multiple_block(uint32_t start_block_addr, uint8_t *data, uint8_t nu
   
   // Wait busy
   uint8_t busy;
+  int retries = 100;
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &busy, 1, HAL_MAX_DELAY);
-  } while (busy != 0xFF);
+  } while (busy != 0xFF && --retries > 0);
 
   // Release CS
   sd_deselect();
@@ -455,24 +474,24 @@ int sd_read_block(uint32_t block_addr, uint8_t *buffer) {
 
   // Read Data Packet
   sd_select();
-  read_data_packet(buffer);
+  int result = read_data_packet(buffer);
   sd_deselect();
 
-  return 0;
+  return (result != 0) ? -1 : 0;
 }
 
 int sd_read_multiple_block(uint32_t start_block_addr, uint8_t *buffer, uint8_t number_of_blocks){
   int return_status = 0;
 
   for (int i = 0; i < number_of_blocks; i++){
-    return_status = sd_read_block(start_block_addr + i, buffer + (i * SD_BLOCK_SIZE)); 
+    return_status += sd_read_block(start_block_addr + i, buffer + (i * SD_BLOCK_SIZE)); 
   }
   return return_status == 0? 0 : -1;
 }
 
 int metadata_write(metadata_t *metadata) {
     // Calculate CRC
-    uint16_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)metadata, sizeof(metadata_t) - sizeof(uint16_t));
+    uint16_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)metadata, (sizeof(metadata_t) - sizeof(uint16_t)) / 4);
     metadata->crc = crc;
 
     uint8_t sector[SD_BLOCK_SIZE];
