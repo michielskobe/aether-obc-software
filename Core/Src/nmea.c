@@ -37,7 +37,7 @@ static int nmea_get_field(const char *sentence, uint8_t field, char *out, uint8_
 {
     // Skip to the start of the requested field
     uint8_t current = 0;
-    while (sentence && current < field) {
+    while (*sentence != '\0' && current < field) {
         if (*sentence == ',') {
             current++;
         }
@@ -46,7 +46,7 @@ static int nmea_get_field(const char *sentence, uint8_t field, char *out, uint8_
         
     // Copy until next comma, '*', or end of string
     uint8_t i = 0;
-    while (sentence && *sentence != ',' && *sentence != '*' && i < out_size - 1) {
+    while (*sentence != '\0' && *sentence != ',' && *sentence != '*' && i < out_size - 1) {
         out[i++] = *sentence++;
     }
     out[i] = '\0';
@@ -85,23 +85,23 @@ static uint32_t nmea_parse_latlon(const char *field, char hemi)
     }
 
     // Minutes start 2 chars before the dot
-    const double minutes = atof(field + deg_len);
-    if (minutes < 0.0 || minutes >= 60.0) {
+    const float minutes = strtof(field + deg_len, NULL);
+    if (minutes < 0.0f || minutes >= 60.0f) {
         return 0; // Invalid format, minutes out of range
     }
 
-    // Combine and scale to 1e-7 degrees (South and West hemispheres are negative)
-    double value = (degrees + minutes / 60.0);
+    // Combine degrees and minutes (South and West hemispheres are negative)
+    float value = (degrees + minutes / 60.0f);
     if (hemi == 'S' || hemi == 'W') {
         value = -value;
     }
 
     if (deg_len == 3) {
         /* Longitude: -180..+180 → scaled to 2^24 */
-        return (uint32_t)((value + 180.0) * (16777216.0 / 360.0) + 0.5) & 0xFFFFFF;
+        return (uint32_t)((value + 180.0f) * (16777216.0f / 360.0f) + 0.5f) & 0xFFFFFF;
     } else {
         /* Latitude: -90..+90 → scaled to 2^24 */
-        return (uint32_t)((value + 90.0)  * (16777216.0 / 180.0) + 0.5) & 0xFFFFFF;
+        return (uint32_t)((value + 90.0f)  * (16777216.0f / 180.0f) + 0.5f) & 0xFFFFFF;
     }
 }
 
@@ -114,7 +114,7 @@ static uint8_t nmea_compute_checksum(const char *sentence)
     if (*sentence == '$') sentence++;
 
     // XOR all characters until '*' or end of string
-    while (*sentence && *sentence != '*') {
+    while (*sentence != '*' && *sentence != '\0') {
         cs ^= (uint8_t)(*sentence++);
     }
 
