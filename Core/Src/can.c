@@ -63,10 +63,12 @@ void send_can_command(uint16_t id, const uint8_t *data, uint8_t dlc)
 
     uint32_t mailbox;
 
-    if (HAL_CAN_AddTxMessage(&hcan1, &header, (uint8_t *)data, &mailbox) != HAL_OK)
+    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0)
     {
-        Error_Handler();
+        osDelay(1);
     }
+
+    HAL_CAN_AddTxMessage(&hcan1, &header, (uint8_t *)data, &mailbox);
 }
 
 void send_can_command_tracked(uint16_t cmd_id, uint16_t reply_id, const uint8_t *data, uint8_t dlc)
