@@ -48,7 +48,7 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
-#define ANTENNA_DEPLOY_TIMEOUT_MS 20000 // 20 second time-out to allow antenna deployment before issuing fTPS deployment
+#define ANTENNA_DEPLOY_TIMEOUT_MS 25000 // 25 second time-out to allow antenna deployment before issuing fTPS deployment
 #define IFS_5V_ENABLE_TIMEOUT_MS 5000 // 5 second time-out to allow IFS 5V rail to enable before issuing burn-wire signals
 
 #define MANIFOLD_PRESSURE_THRESHOLD 0 /* TODO: define */
@@ -149,6 +149,12 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
 };
 /* USER CODE BEGIN PV */
 static volatile bool test_scenario = true;
+
+// Timers
+osTimerId_t sods_timer;
+osTimerId_t soe_timer;
+osTimerId_t iridium_timer;
+
 
 // SD Card private variables
 static uint8_t sd_block[SD_BLOCK_SIZE];
@@ -852,10 +858,26 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     case RXSM_SOE_Pin:
       osThreadFlagsSet(SysOrchestratorHandle, SOE_FLAG);
       break;
+    // TODO: add FFU ejection pin
     default:
       break;
   }
 }
+
+static void SODS_Timer_Callback (void *argument) {
+  osThreadFlagsSet(SysOrchestratorHandle, SODS_FLAG);
+}
+
+static void SOE_Timer_Callback (void *argument) {
+  osThreadFlagsSet(SysOrchestratorHandle, SOE_FLAG);
+}
+
+static void Iridium_Timer_Callback (void *argument) {
+  // Disable Iridium when timer has triggered
+  send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);  
+}
+
+
 
 /* USER CODE END 4 */
 
@@ -897,46 +919,60 @@ void StartSystemOrchestrator(void *argument)
 
   // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
   // If LO has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.rxsm_lo == 0){
+  if (mission_metadata.rxsm_lo != 0xFF){
     osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
     // Set the rxsm_lo field in the mission metadata to 0xFF to indicate that LO has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_lo = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever); 
     metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id); 
-
-    // Instruct EPS to switch to internal power
-    send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); 
   }
+
+  // Start SODS and SOE timers to avoid waiting for signal that never arrives
+  sods_timer = osTimerNew(SODS_Timer_Callback, osTimerOnce, NULL, NULL);
+  soe_timer = osTimerNew(SOE_Timer_Callback, osTimerOnce, NULL, NULL);
+  osTimerStart(sods_timer, pdMS_TO_TICKS(80000));
+  osTimerStart(soe_timer, pdMS_TO_TICKS(150000));
+
+  // Instruct EPS to switch to internal power
+  send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); 
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
   // If SODS has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.rxsm_sods == 0){
+  if (mission_metadata.rxsm_sods != 0xFF){
     osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
     // Set the rxsm_sods field in the mission metadata to 0xFF to indicate that SODS has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_sods = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id);
-
-    // Instruct EPS to turn on camera system power rail
-    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
   }
+
+  // Stop SODS timer
+  osTimerStop(sods_timer);
+  osTimerDelete(sods_timer);
+
+  // Instruct EPS to turn on camera system power rail
+  send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
 
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
   // If SOE has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.rxsm_soe == 0){
+  if (mission_metadata.rxsm_soe != 0xFF){
     osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
     // Set the rxsm_soe field in the mission metadata to 0xFF to indicate that SOE has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_soe = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata);
-    osMutexRelease(sd_mutex_id); 
-
-    // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
-    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){GNSS_3V3_RAIL_ID}, 1);
-    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
+    osMutexRelease(sd_mutex_id);
   }
+
+  // Stop SOE timer
+  osTimerStop(soe_timer);
+  osTimerDelete(soe_timer);
+
+  // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
+  send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){GNSS_3V3_RAIL_ID}, 1);
+  send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
 
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
@@ -953,19 +989,19 @@ void StartSystemOrchestrator(void *argument)
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id); 
-
-    // Instruct EPS to turn on Iridium and IFS 5V power rails
-    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
-    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
-
-    // Issue antenna burn-wire ARM signal
-    send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-
-    osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, ANTENNA_DEPLOY_TIMEOUT_MS);
-
-    // Issue CGG1 ARM signal
-    send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
   }
+
+  // Instruct EPS to turn on Iridium and IFS 5V power rails
+  send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
+  send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
+
+  // Issue antenna burn-wire ARM signal
+  send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+
+  osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, ANTENNA_DEPLOY_TIMEOUT_MS);
+
+  // Issue CGG1 ARM signal
+  send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
 
   // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
   osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
@@ -1035,12 +1071,16 @@ void StartSystemOrchestrator(void *argument)
       // 4. Landing detected (low altitude + low acceleration) → power off all except OBC + UHFCOM
       if (altitude <= LANDED_ALTITUDE_THRESHOLD && accel <= LANDED_ACCEL_THRESHOLD)
       {
+        // Disable unused power rails
         send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
         send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
-        send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
 
         // Enable beacon mode
         send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+
+        // Start Iridium timer (2 minutes)
+        iridium_timer = osTimerNew(Iridium_Timer_Callback, osTimerOnce, NULL, NULL);
+        osTimerStart(iridium_timer, pdMS_TO_TICKS(120000));
       }
     }
   }
