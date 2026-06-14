@@ -151,10 +151,7 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
 static volatile bool test_scenario = true;
 
 // Timers
-osTimerId_t sods_timer;
-osTimerId_t soe_timer;
 osTimerId_t iridium_timer;
-
 
 // SD Card private variables
 static uint8_t sd_block[SD_BLOCK_SIZE];
@@ -192,7 +189,7 @@ void StartIridiumManager(void *argument);
 void StartCommandInterface(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+static void Iridium_Timer_Callback(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -258,6 +255,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
+  iridium_timer = osTimerNew(Iridium_Timer_Callback, osTimerOnce, NULL, NULL);
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
@@ -709,9 +707,9 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(SD_CS_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : RXSM_SODS_Pin RXSM_SOE_Pin RXSM_LO_Pin */
-  GPIO_InitStruct.Pin = RXSM_SODS_Pin|RXSM_SOE_Pin|RXSM_LO_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  /*Configure GPIO pins : RXSM_SODS_Pin RXSM_SOE_Pin RXSM_LO_Pin FFU_EJECT_DETECT_Pin */
+  GPIO_InitStruct.Pin = RXSM_SODS_Pin|RXSM_SOE_Pin|RXSM_LO_Pin|FFU_EJECT_DETECT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
@@ -850,26 +848,32 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   switch (GPIO_Pin)
   {
     case RXSM_LO_Pin:
-      osThreadFlagsSet(SysOrchestratorHandle, LO_FLAG);
+      if (HAL_GPIO_ReadPin(RXSM_LO_GPIO_Port, RXSM_LO_Pin) == GPIO_PIN_RESET)
+        osThreadFlagsSet(SysOrchestratorHandle, LO_VALID_EDGE_FLAG);
+      else
+        osThreadFlagsSet(SysOrchestratorHandle, LO_INVALID_EDGE_FLAG);
       break;
     case RXSM_SODS_Pin:
-      osThreadFlagsSet(SysOrchestratorHandle, SODS_FLAG);
+      if (HAL_GPIO_ReadPin(RXSM_SODS_GPIO_Port, RXSM_SODS_Pin) == GPIO_PIN_RESET)
+        osThreadFlagsSet(SysOrchestratorHandle, SODS_VALID_EDGE_FLAG);
+      else
+        osThreadFlagsSet(SysOrchestratorHandle, SODS_INVALID_EDGE_FLAG);
       break;
     case RXSM_SOE_Pin:
-      osThreadFlagsSet(SysOrchestratorHandle, SOE_FLAG);
+      if (HAL_GPIO_ReadPin(RXSM_SOE_GPIO_Port, RXSM_SOE_Pin) == GPIO_PIN_RESET)
+        osThreadFlagsSet(SysOrchestratorHandle, SOE_VALID_EDGE_FLAG);
+      else
+        osThreadFlagsSet(SysOrchestratorHandle, SOE_INVALID_EDGE_FLAG);
       break;
-    // TODO: add FFU ejection pin
+    case FFU_EJECT_DETECT_Pin:
+      if (HAL_GPIO_ReadPin(FFU_EJECT_DETECT_GPIO_Port, FFU_EJECT_DETECT_Pin) == GPIO_PIN_SET)
+        osThreadFlagsSet(SysOrchestratorHandle, EJECTION_VALID_EDGE_FLAG);
+      else
+        osThreadFlagsSet(SysOrchestratorHandle, EJECTION_INVALID_EDGE_FLAG);
+      break;
     default:
       break;
   }
-}
-
-static void SODS_Timer_Callback (void *argument) {
-  osThreadFlagsSet(SysOrchestratorHandle, SODS_FLAG);
-}
-
-static void SOE_Timer_Callback (void *argument) {
-  osThreadFlagsSet(SysOrchestratorHandle, SOE_FLAG);
 }
 
 static void Iridium_Timer_Callback (void *argument) {
@@ -877,7 +881,22 @@ static void Iridium_Timer_Callback (void *argument) {
   send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);  
 }
 
+static inline void wait_for_validated_signal(uint32_t valid_flag, uint32_t invalid_flag)
+{
+    for (;;)
+    {
+        // Wait for the good edge first
+        osThreadFlagsWait(valid_flag, osFlagsWaitAny, osWaitForever);
 
+        // Now wait 1 second, but bail out immediately if the bad edge arrives
+        uint32_t result = osThreadFlagsWait(invalid_flag, osFlagsWaitAny, pdMS_TO_TICKS(1000));
+
+        if (result == osFlagsErrorTimeout)
+            return; // Stayed in valid state for the full second → event confirmed
+        
+        // Bad edge arrived within the second → was a glitch, loop and try again
+    }
+}
 
 /* USER CODE END 4 */
 
@@ -920,7 +939,7 @@ void StartSystemOrchestrator(void *argument)
   // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
   // If LO has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.rxsm_lo != 0xFF){
-    osThreadFlagsWait(LO_FLAG, osFlagsWaitAny, osWaitForever);
+    wait_for_validated_signal(LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG);
     // Set the rxsm_lo field in the mission metadata to 0xFF to indicate that LO has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_lo = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever); 
@@ -928,19 +947,13 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
   }
 
-  // Start SODS and SOE timers to avoid waiting for signal that never arrives
-  sods_timer = osTimerNew(SODS_Timer_Callback, osTimerOnce, NULL, NULL);
-  soe_timer = osTimerNew(SOE_Timer_Callback, osTimerOnce, NULL, NULL);
-  osTimerStart(sods_timer, pdMS_TO_TICKS(80000));
-  osTimerStart(soe_timer, pdMS_TO_TICKS(150000));
-
   // Instruct EPS to switch to internal power
   send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); 
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
   // If SODS has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.rxsm_sods != 0xFF){
-    osThreadFlagsWait(SODS_FLAG, osFlagsWaitAny, osWaitForever);
+    wait_for_validated_signal(SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG);
     // Set the rxsm_sods field in the mission metadata to 0xFF to indicate that SODS has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_sods = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
@@ -948,27 +961,19 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id);
   }
 
-  // Stop SODS timer
-  osTimerStop(sods_timer);
-  osTimerDelete(sods_timer);
-
   // Instruct EPS to turn on camera system power rail
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
 
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
   // If SOE has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.rxsm_soe != 0xFF){
-    osThreadFlagsWait(SOE_FLAG, osFlagsWaitAny, osWaitForever);
+    wait_for_validated_signal(SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG);
     // Set the rxsm_soe field in the mission metadata to 0xFF to indicate that SOE has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_soe = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
     metadata_write(&mission_metadata);
     osMutexRelease(sd_mutex_id);
   }
-
-  // Stop SOE timer
-  osTimerStop(soe_timer);
-  osTimerDelete(soe_timer);
 
   // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){GNSS_3V3_RAIL_ID}, 1);
@@ -983,7 +988,7 @@ void StartSystemOrchestrator(void *argument)
   // Wait for the ejection signal before proceeding with the rest of the system startup sequence
   // If ejection has already been triggered, then skip waiting and proceed immediately
   if (mission_metadata.ffu_ejection == 0){
-    osThreadFlagsWait(FFU_EJECTION_FLAG, osFlagsWaitAny, osWaitForever);
+    wait_for_validated_signal(EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG);
     // Set the ffu_ejection field in the mission metadata to 0xFF to indicate that ejection has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.ffu_ejection = 0xFF;
     osMutexAcquire(sd_mutex_id, osWaitForever);
@@ -1064,6 +1069,9 @@ void StartSystemOrchestrator(void *argument)
       // 3. Parachute open → fire CGG2 if not already fired
       if (mission_metadata.bw2_fired && !mission_metadata.cgg2_fired)
       {
+        // Delay to ensure parachute has stabilized after deployment 
+        osDelay(pdMS_TO_TICKS(30000));
+
         // Issue CGG2 ARM signal
         send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
       }
@@ -1078,9 +1086,8 @@ void StartSystemOrchestrator(void *argument)
         // Enable beacon mode
         send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
 
-        // Start Iridium timer (2 minutes)
-        iridium_timer = osTimerNew(Iridium_Timer_Callback, osTimerOnce, NULL, NULL);
-        osTimerStart(iridium_timer, pdMS_TO_TICKS(120000));
+        // Start Iridium timer (5 minutes)
+        osTimerStart(iridium_timer, pdMS_TO_TICKS(300000));
       }
     }
   }

@@ -46,21 +46,22 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
-#define RMU_STARTUP_FLAG      (1U << 0)  // 0x0001
-#define GNSS_STARTUP_FLAG     (1U << 1)  // 0x0002
-#define IRIDIUM_STARTUP_FLAG  (1U << 2)  // 0x0004
-#define SD_CARD_INIT_FLAG     (1U << 3)  // 0x0008
-#define SD_CARD_STARTUP_FLAG  (1U << 4)  // 0x0010
-#define DATA_ACQ_STARTUP_FLAG (1U << 5)  // 0x0020
-#define LO_FLAG               (1U << 6)  // 0x0040
-#define SODS_FLAG             (1U << 7)  // 0x0080
-#define SOE_FLAG              (1U << 8)  // 0x0100
-#define FFU_EJECTION_FLAG     (1U << 9)  // 0x0200
-#define RMU_SHUTDOWN_FLAG     (1U << 10) // 0x0400
-#define IFS_WAKEUP_FLAG       (1U << 11) // 0x0800
-#define UHFCOM_WAKEUP_FLAG    (1U << 12) // 0x1000
-#define CS_WAKEUP_FLAG        (1U << 13) // 0x2000
-#define ANTENNA_DEPLOYED_FLAG (1U << 14) // 0x4000
+#define RMU_STARTUP_FLAG            (1U << 0)  // 0x0001
+#define GNSS_STARTUP_FLAG           (1U << 1)  // 0x0002
+#define IRIDIUM_STARTUP_FLAG        (1U << 2)  // 0x0004
+#define SD_CARD_INIT_FLAG           (1U << 3)  // 0x0008
+#define SD_CARD_STARTUP_FLAG        (1U << 4)  // 0x0010
+#define DATA_ACQ_STARTUP_FLAG       (1U << 5)  // 0x0020
+#define LO_VALID_EDGE_FLAG          (1U << 6)  // 0x0040
+#define LO_INVALID_EDGE_FLAG        (1U << 7)  // 0x0080
+#define SODS_VALID_EDGE_FLAG        (1U << 8)  // 0x0100
+#define SODS_INVALID_EDGE_FLAG      (1U << 9)  // 0x0200
+#define SOE_VALID_EDGE_FLAG         (1U << 10) // 0x0400
+#define SOE_INVALID_EDGE_FLAG       (1U << 11) // 0x0800
+#define EJECTION_VALID_EDGE_FLAG    (1U << 12) // 0x1000
+#define EJECTION_INVALID_EDGE_FLAG  (1U << 13) // 0x2000
+#define RMU_SHUTDOWN_FLAG           (1U << 14) // 0x4000
+#define ANTENNA_DEPLOYED_FLAG       (1U << 15) // 0x8000
 
 #define IFS_3V3_RAIL_ID 0x01
 #define IFS_5V_RAIL_ID 0x02
@@ -88,6 +89,9 @@ void Error_Handler(void);
 #define RXSM_LO_Pin GPIO_PIN_2
 #define RXSM_LO_GPIO_Port GPIOB
 #define RXSM_LO_EXTI_IRQn EXTI2_IRQn
+#define FFU_EJECT_DETECT_Pin GPIO_PIN_10
+#define FFU_EJECT_DETECT_GPIO_Port GPIOB
+#define FFU_EJECT_DETECT_EXTI_IRQn EXTI15_10_IRQn
 #define PGOOD_Pin GPIO_PIN_12
 #define PGOOD_GPIO_Port GPIOB
 #define PGOOD_EXTI_IRQn EXTI15_10_IRQn
