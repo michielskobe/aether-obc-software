@@ -26,13 +26,15 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include "can.h"
 #include "command_interface.h"
 #include "data_acquisition.h"
 #include "data_packet.h"
 #include "mosaic_x5.h"
 #include "sd_spi.h"
-
+#include "iridium.h"
+#include "stm32l4xx_hal_cortex.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -67,6 +69,8 @@ CRC_HandleTypeDef hcrc;
 UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart5;
+DMA_HandleTypeDef hdma_uart4_rx;
+DMA_HandleTypeDef hdma_uart4_tx;
 DMA_HandleTypeDef hdma_uart5_rx;
 
 SPI_HandleTypeDef hspi1;
@@ -85,7 +89,7 @@ osThreadId_t RMUManagerHandle;
 const osThreadAttr_t RMUManager_attributes = {
   .name = "RMUManager",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityHigh,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for GNSSManager */
 osThreadId_t GNSSManagerHandle;
@@ -112,15 +116,15 @@ const osThreadAttr_t SDCardManager_attributes = {
 osThreadId_t IridiumManagerHandle;
 const osThreadAttr_t IridiumManager_attributes = {
   .name = "IridiumManager",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .stack_size = 1024 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for CmdInterface */
 osThreadId_t CmdInterfaceHandle;
 const osThreadAttr_t CmdInterface_attributes = {
   .name = "CmdInterface",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityRealtime,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for SD_CardQueue */
 osMessageQueueId_t SD_CardQueueHandle;
@@ -148,12 +152,16 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
   .name = "MissionPhaseDataQueue"
 };
 /* USER CODE BEGIN PV */
+/* General PV */
 static volatile bool test_scenario = true;
 
-// Timers
-osTimerId_t iridium_timer;
+/* Iridium PV */
+osTimerId_t iridium_off_timer;
+static osTimerId_t iridium_tx_timer;
 
-// SD Card private variables
+static IridiumCtx_t s_iridium; // Iridium driver context
+
+/* SD Card PV */
 static uint8_t sd_block[SD_BLOCK_SIZE];
 static uint16_t block_index = 0;
 static uint32_t current_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
@@ -162,10 +170,10 @@ metadata_t mission_metadata = {0};
 osMutexId_t sd_mutex_id;  
  
 const osMutexAttr_t SD_Card_Mutex_attr = {
-  "SD_CardMutex",                          // human readable mutex name
-   osMutexPrioInherit | osMutexRobust,    // attr_bits
-  NULL,                                     // memory for control block   
-  0U                                        // size for control block
+  "SD_CardMutex",                            // human readable mutex name
+   osMutexPrioInherit | osMutexRobust,  // attr_bits
+  NULL,                                    // memory for control block   
+  0U                                      // size for control block
 };
 
 /* USER CODE END PV */
@@ -189,7 +197,8 @@ void StartIridiumManager(void *argument);
 void StartCommandInterface(void *argument);
 
 /* USER CODE BEGIN PFP */
-static void Iridium_Timer_Callback(void *argument);
+static void Iridium_OffTimer_Callback(void *argument);
+static void Iridium_TxTimer_Callback(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -255,7 +264,8 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
-  iridium_timer = osTimerNew(Iridium_Timer_Callback, osTimerOnce, NULL, NULL);
+  iridium_tx_timer = osTimerNew(Iridium_TxTimer_Callback, osTimerPeriodic, NULL, NULL);
+  iridium_off_timer = osTimerNew(Iridium_OffTimer_Callback, osTimerOnce, NULL, NULL);
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
@@ -669,6 +679,12 @@ static void MX_DMA_Init(void)
   /* DMA2_Channel2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Channel2_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA2_Channel2_IRQn);
+  /* DMA2_Channel3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel3_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel3_IRQn);
+  /* DMA2_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel5_IRQn);
 
 }
 
@@ -807,13 +823,29 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 }
 
 /**
-  * @brief  This function handles UART RX event callback for UART5 (Mosaic-X5).
+ * @brief  Called by HAL when a DMA TX transfer completes on any UART.
+ *         Forward to the Iridium driver when it is UART4.
+ */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == UART4) {
+    Iridium_TxCpltCallback(&s_iridium);
+  }
+}
+
+/**
+  * @brief  Called by HAL when the IDLE line fires or DMA RX completes on any UART.
+  *         Forward to the Iridium driver when it is UART4.
+  *         Forward to the GNSS driver when it is UART5.
   * @param  huart: pointer to a UART_HandleTypeDef structure that contains
   *                the configuration information for the specified UART.
   * @param  size: number of bytes received in the current UART RX event.
   * @retval None
   */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef * huart, uint16_t size){
+  if (huart->Instance == UART4) {
+    Iridium_RxEventCallback(&s_iridium, size);
+  } 
   if (huart->Instance == UART5) {
     mosaic_uart_rx_cb(size);
   }
@@ -871,14 +903,31 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
       else
         osThreadFlagsSet(SysOrchestratorHandle, EJECTION_INVALID_EDGE_FLAG);
       break;
+    case PGOOD_Pin:
+      HAL_NVIC_DisableIRQ(PGOOD_EXTI_IRQn);
+      break;
+    case NA_Pin:
+      break;
+    case RI_Pin:
+      break;
     default:
       break;
   }
 }
 
-static void Iridium_Timer_Callback (void *argument) {
+static void Iridium_OffTimer_Callback (void *argument) {
   // Disable Iridium when timer has triggered
   send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);  
+}
+
+/**
+ * @brief  Periodic 15 s timer callback.
+ *         Only posts the thread flag — never touches UART or the session SM.
+ */
+static void Iridium_TxTimer_Callback(void *argument)
+{
+    (void)argument;
+    osThreadFlagsSet(IridiumManagerHandle, IRIDIUM_TX_FLAG);
 }
 
 static inline void wait_for_validated_signal(uint32_t valid_flag, uint32_t invalid_flag)
@@ -1010,6 +1059,7 @@ void StartSystemOrchestrator(void *argument)
 
   // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
   osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
+  osThreadFlagsSet(IridiumManagerHandle, IRIDIUM_STARTUP_FLAG);
 
   can_rx_msg_t rx_msg;
   float altitude = MAXFLOAT;
@@ -1018,7 +1068,7 @@ void StartSystemOrchestrator(void *argument)
   float accel = MAXFLOAT;
 
   for (;;)
-  {
+  {    
     if (osMessageQueueGet(MissionPhaseDataQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
       switch (rx_msg.RxHeader.StdId)
       {
@@ -1087,7 +1137,7 @@ void StartSystemOrchestrator(void *argument)
         send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
 
         // Start Iridium timer (5 minutes)
-        osTimerStart(iridium_timer, pdMS_TO_TICKS(300000));
+        osTimerStart(iridium_off_timer, pdMS_TO_TICKS(300000));
       }
     }
   }
@@ -1254,12 +1304,46 @@ void StartSDCardManager(void *argument)
 void StartIridiumManager(void *argument)
 {
   /* USER CODE BEGIN StartIridiumManager */
-  // Wait for SystemManager to start up and set the IRIDIUM_STARTUP_FLAG before proceeding
-  osThreadFlagsWait(IRIDIUM_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
+
+  // Enable the LTC3225 Supercap charger
+  HAL_GPIO_WritePin(GPIOB, SHDN_Pin, GPIO_PIN_SET);
+
+  // Enable output power with the LTC4210
+  HAL_GPIO_WritePin(GPIOB, PWR_EN_Pin, GPIO_PIN_SET);
+
+  // Set ON/OFF pin high to enable the modem
+  HAL_GPIO_WritePin(GPIOC, IR_ON_OFF_Pin, GPIO_PIN_SET);
+  
+  // Initialise Iridium driver
+  Iridium_Init(&s_iridium, &huart4);
+
+  // Start periodic TX timer (15 000 ms)
+  osTimerStart(iridium_tx_timer, 15000u);
+
+  
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    // 1. Drain queue
+    data_packet_t pkt;
+    while (osMessageQueueGet(IridiumQueueHandle, &pkt, NULL, 0u) == osOK)
+    {
+        Iridium_PushPacket(&s_iridium, &pkt);
+    }
+
+    // 2. Drive Iridium session State Machine
+    Iridium_SessionTick(&s_iridium);
+
+    //3. Check for TX flag (1-tick timeout = natural yield)
+    uint32_t flags = osThreadFlagsWait(IRIDIUM_TX_FLAG, osFlagsWaitAny, 1u);
+    if ((flags & IRIDIUM_TX_FLAG) == IRIDIUM_TX_FLAG)
+    {
+        /*
+          * Iridium_SessionStart() is a no-op if:
+          *   - session_state != IDLE  (previous session still running)
+          */
+        Iridium_SessionStart(&s_iridium);
+    }
   }
   /* USER CODE END StartIridiumManager */
 }

@@ -46,22 +46,23 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
-#define RMU_STARTUP_FLAG            (1U << 0)  // 0x0001
-#define GNSS_STARTUP_FLAG           (1U << 1)  // 0x0002
-#define IRIDIUM_STARTUP_FLAG        (1U << 2)  // 0x0004
-#define SD_CARD_INIT_FLAG           (1U << 3)  // 0x0008
-#define SD_CARD_STARTUP_FLAG        (1U << 4)  // 0x0010
-#define DATA_ACQ_STARTUP_FLAG       (1U << 5)  // 0x0020
-#define LO_VALID_EDGE_FLAG          (1U << 6)  // 0x0040
-#define LO_INVALID_EDGE_FLAG        (1U << 7)  // 0x0080
-#define SODS_VALID_EDGE_FLAG        (1U << 8)  // 0x0100
-#define SODS_INVALID_EDGE_FLAG      (1U << 9)  // 0x0200
-#define SOE_VALID_EDGE_FLAG         (1U << 10) // 0x0400
-#define SOE_INVALID_EDGE_FLAG       (1U << 11) // 0x0800
-#define EJECTION_VALID_EDGE_FLAG    (1U << 12) // 0x1000
-#define EJECTION_INVALID_EDGE_FLAG  (1U << 13) // 0x2000
-#define RMU_SHUTDOWN_FLAG           (1U << 14) // 0x4000
-#define ANTENNA_DEPLOYED_FLAG       (1U << 15) // 0x8000
+#define RMU_STARTUP_FLAG            (1U << 0)
+#define GNSS_STARTUP_FLAG           (1U << 1)
+#define IRIDIUM_STARTUP_FLAG        (1U << 2)
+#define SD_CARD_INIT_FLAG           (1U << 3)
+#define SD_CARD_STARTUP_FLAG        (1U << 4)
+#define DATA_ACQ_STARTUP_FLAG       (1U << 5)
+#define LO_VALID_EDGE_FLAG          (1U << 6)
+#define LO_INVALID_EDGE_FLAG        (1U << 7)
+#define SODS_VALID_EDGE_FLAG        (1U << 8)
+#define SODS_INVALID_EDGE_FLAG      (1U << 9)
+#define SOE_VALID_EDGE_FLAG         (1U << 10)
+#define SOE_INVALID_EDGE_FLAG       (1U << 11)
+#define EJECTION_VALID_EDGE_FLAG    (1U << 12)
+#define EJECTION_INVALID_EDGE_FLAG  (1U << 13)
+#define RMU_SHUTDOWN_FLAG           (1U << 14)
+#define ANTENNA_DEPLOYED_FLAG       (1U << 15) 
+#define IRIDIUM_TX_FLAG             (1u << 16)
 
 #define IFS_3V3_RAIL_ID 0x01
 #define IFS_5V_RAIL_ID 0x02
