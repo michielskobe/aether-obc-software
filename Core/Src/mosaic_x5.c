@@ -15,6 +15,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "mosaic_x5.h"
+#include "main.h"
 #include "nmea.h"
 #include "data_packet.h"
 #include "stm32l4xx_hal.h"
@@ -167,6 +168,9 @@ void gnss_data_handler(void){
 }
 
 int mosaic_x5_init(void){
+    // Enable power to the mosaic-x5
+    HAL_GPIO_WritePin(GNSS_CB_SHDN_GPIO_Port, GNSS_CB_SHDN_Pin, GPIO_PIN_RESET);
+
     /* The mosaic-X5 has a boot configuration stored in non-volatile memory that is loaded on power-up.
      * This boot configuration includes setting the mosaic-X5 to output GGA sentences every 2 seconds on COM1 (setNMEAOutput),
      * setting the mosaic-X5's receiver dynamics to "Unlimited" (setReceiverDynamics), 

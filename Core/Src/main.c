@@ -35,6 +35,7 @@
 #include "sd_spi.h"
 #include "iridium.h"
 #include "stm32l4xx_hal_cortex.h"
+#include "stm32l4xx_hal_gpio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -81,7 +82,7 @@ DMA_HandleTypeDef hdma_spi1_tx;
 osThreadId_t SysOrchestratorHandle;
 const osThreadAttr_t SysOrchestrator_attributes = {
   .name = "SysOrchestrator",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityRealtime,
 };
 /* Definitions for RMUManager */
@@ -109,7 +110,7 @@ const osThreadAttr_t DataAcquisition_attributes = {
 osThreadId_t SDCardManagerHandle;
 const osThreadAttr_t SDCardManager_attributes = {
   .name = "SDCardManager",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for IridiumManager */
@@ -123,7 +124,7 @@ const osThreadAttr_t IridiumManager_attributes = {
 osThreadId_t CmdInterfaceHandle;
 const osThreadAttr_t CmdInterface_attributes = {
   .name = "CmdInterface",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for SD_CardQueue */
@@ -270,19 +271,19 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of SD_CardQueue */
-  SD_CardQueueHandle = osMessageQueueNew (128, sizeof(data_packet_t), &SD_CardQueue_attributes);
+  SD_CardQueueHandle = osMessageQueueNew (64, sizeof(data_packet_t), &SD_CardQueue_attributes);
 
   /* creation of IridiumQueue */
-  IridiumQueueHandle = osMessageQueueNew (128, sizeof(data_packet_t), &IridiumQueue_attributes);
+  IridiumQueueHandle = osMessageQueueNew (16, sizeof(data_packet_t), &IridiumQueue_attributes);
 
   /* creation of SensorDataQueue */
-  SensorDataQueueHandle = osMessageQueueNew (128, sizeof(can_rx_msg_t), &SensorDataQueue_attributes);
+  SensorDataQueueHandle = osMessageQueueNew (64, sizeof(can_rx_msg_t), &SensorDataQueue_attributes);
 
   /* creation of TelecommandQueue */
   TelecommandQueueHandle = osMessageQueueNew (16, sizeof(can_rx_msg_t), &TelecommandQueue_attributes);
 
   /* creation of MissionPhaseDataQueue */
-  MissionPhaseDataQueueHandle = osMessageQueueNew (32, sizeof(can_rx_msg_t), &MissionPhaseDataQueue_attributes);
+  MissionPhaseDataQueueHandle = osMessageQueueNew (16, sizeof(can_rx_msg_t), &MissionPhaseDataQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -701,11 +702,14 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, GNSS_CB_SHDN_Pin|SD_SHDN_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_RESET);
@@ -715,6 +719,13 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(IR_ON_OFF_GPIO_Port, IR_ON_OFF_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : GNSS_CB_SHDN_Pin SD_SHDN_Pin */
+  GPIO_InitStruct.Pin = GNSS_CB_SHDN_Pin|SD_SHDN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : SD_CS_Pin */
   GPIO_InitStruct.Pin = SD_CS_Pin;
@@ -1069,7 +1080,7 @@ void StartSystemOrchestrator(void *argument)
 
   for (;;)
   {    
-    if (osMessageQueueGet(MissionPhaseDataQueueHandle, &rx_msg, NULL, osWaitForever) == osOK) {
+    if (osMessageQueueGet(MissionPhaseDataQueueHandle, &rx_msg, NULL, 100U) == osOK) {
       switch (rx_msg.RxHeader.StdId)
       {
         case 0x502: // Altitude data
@@ -1154,7 +1165,7 @@ void StartSystemOrchestrator(void *argument)
 void StartRMUManager(void *argument)
 {
   /* USER CODE BEGIN StartRMUManager */
-  // Wait for SystemManager to start up and set the RMU_STARTUP_FLAG before proceeding
+  // Wait for SystemOrchestrator to start up and set the RMU_STARTUP_FLAG before proceeding
   osThreadFlagsWait(RMU_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   /* Infinite loop */
   for(;;)
@@ -1188,7 +1199,7 @@ void StartGNSSManager(void *argument)
 {
   /* USER CODE BEGIN StartGNSSManager */
 
-  // Wait for SystemManager to start up and set the GNSS_STARTUP_FLAG before proceeding
+  // Wait for SystemOrchestrator to start up and set the GNSS_STARTUP_FLAG before proceeding
   osThreadFlagsWait(GNSS_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   
   // Initialize the mosaic-X5 GNSS receiver
@@ -1201,6 +1212,7 @@ void StartGNSSManager(void *argument)
   {
     // Wait for and handle GNSS data
     gnss_data_handler();
+    osDelay(1);
   }
   /* USER CODE END StartGNSSManager */
 }
@@ -1215,7 +1227,7 @@ void StartGNSSManager(void *argument)
 void StartDataAcquisition(void *argument)
 {
   /* USER CODE BEGIN StartDataAcquisition */
-  // Wait for SystemManager to start up and set the DATA_ACQ_STARTUP_FLAG before proceeding
+  // Wait for SystemOrchestrator to start up and set the DATA_ACQ_STARTUP_FLAG before proceeding
   osThreadFlagsWait(DATA_ACQ_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
 
   can_rx_msg_t rx_msg;
@@ -1243,6 +1255,7 @@ void StartSDCardManager(void *argument)
   /* USER CODE BEGIN StartSDCardManager */
 
   // Initialize SD card
+  HAL_GPIO_WritePin(SD_SHDN_GPIO_Port, SD_SHDN_Pin, GPIO_PIN_RESET);
   while (sd_init() != 0) {
     // Initialization failed, retry after a delay
     osDelay(100);
@@ -1258,7 +1271,7 @@ void StartSDCardManager(void *argument)
   // Signal to SystemOrchestrator that SD card is ready
   osThreadFlagsSet(SysOrchestratorHandle, SD_CARD_INIT_FLAG);
 
-  // Wait for SystemManager to start up and set the SD_CARD_STARTUP_FLAG before proceeding
+  // Wait for SystemOrchestrator to start up and set the SD_CARD_STARTUP_FLAG before proceeding
   osThreadFlagsWait(SD_CARD_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
   
   /* Infinite loop */
@@ -1304,6 +1317,8 @@ void StartSDCardManager(void *argument)
 void StartIridiumManager(void *argument)
 {
   /* USER CODE BEGIN StartIridiumManager */
+  // Wait for SystemOrchestrator to start up and set the IRIDIUM_STARTUP_FLAG before proceeding
+  osThreadFlagsWait(IRIDIUM_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
 
   // Enable the LTC3225 Supercap charger
   HAL_GPIO_WritePin(GPIOB, SHDN_Pin, GPIO_PIN_SET);
@@ -1344,6 +1359,8 @@ void StartIridiumManager(void *argument)
           */
         Iridium_SessionStart(&s_iridium);
     }
+
+    osDelay(1);
   }
   /* USER CODE END StartIridiumManager */
 }
@@ -1364,12 +1381,13 @@ void StartCommandInterface(void *argument)
   for(;;)
   {
     // Wait for a CAN message to be received and put into the TelecommandQueue by the CAN RX ISR
-    if (osMessageQueueGet(TelecommandQueueHandle, &rx_msg, NULL, 100) == osOK) {
+    if (osMessageQueueGet(TelecommandQueueHandle, &rx_msg, NULL, 100U) == osOK) {
       CommandInterface_ProcessMessage(&rx_msg);
     }
 
     /* Retransmit any commands whose reply has not arrived in time */
     can_pending_retry();
+    osDelay(1);
 
   }
   /* USER CODE END StartCommandInterface */

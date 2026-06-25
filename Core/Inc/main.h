@@ -79,8 +79,12 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define GNSS_CB_SHDN_Pin GPIO_PIN_15
+#define GNSS_CB_SHDN_GPIO_Port GPIOC
 #define SD_CS_Pin GPIO_PIN_4
 #define SD_CS_GPIO_Port GPIOA
+#define SD_SHDN_Pin GPIO_PIN_4
+#define SD_SHDN_GPIO_Port GPIOC
 #define RXSM_SODS_Pin GPIO_PIN_0
 #define RXSM_SODS_GPIO_Port GPIOB
 #define RXSM_SODS_EXTI_IRQn EXTI0_IRQn
