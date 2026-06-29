@@ -15,6 +15,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "rxsm_interface.h"
+#include "main.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -59,6 +60,7 @@ static struct
     uint16_t crc;
 } parser;
 
+extern CRC_HandleTypeDef hcrc; // Imported from main.c
 /* Private function prototypes -----------------------------------------------*/
 static void HandleEpsPing(const RXSM_Telecommand_t *tc);
 static void HandleEpsBatteriesEnable(const RXSM_Telecommand_t *tc);
@@ -340,6 +342,27 @@ static void HandleCsSpiDisable(const RXSM_Telecommand_t *tc){
     send_can_command(CS_SPI_DISABLE_CAN_ID, (uint8_t[]){0x00}, 1);
 }
 
+static uint16_t RXSM_ComputeCRC(const RXSM_Telecommand_t *tc)
+{
+    uint8_t buf[2 + 2 + 1 + RXSM_TC_MAX_PAYLOAD];
+    uint16_t i = 0;
+
+    buf[i++] = RXSM_TC_SYNC1;
+    buf[i++] = RXSM_TC_SYNC2;
+
+    buf[i++] = (tc->msg_id >> 8) & 0xFF;
+    buf[i++] = (tc->msg_id) & 0xFF;
+
+    buf[i++] = tc->payload_len;
+
+    memcpy(&buf[i], tc->payload, tc->payload_len);
+    i += tc->payload_len;
+
+    uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)buf, i);
+
+    return (uint16_t)crc;
+}
+
 /* Public user code ---------------------------------------------------------*/
 void RXSM_Init(void)
 {
@@ -431,15 +454,19 @@ bool RXSM_GetMessage(RXSM_Telecommand_t *tc){
 
             case RX_WAIT_CRC_L:
                 parser.crc |= byte;
-
-                // TODO: Verify CRC here
-
+                
                 tc->msg_id = parser.cmd_id;
                 tc->payload_len = parser.len;
-
                 memcpy(tc->payload, parser.payload, parser.len);
-
+                
                 parser.state = RX_WAIT_SYNC1;
+
+                uint16_t crc_calc = RXSM_ComputeCRC(tc);
+
+                if (crc_calc != parser.crc)
+                {
+                    break;
+                }
 
                 return true;
         }
