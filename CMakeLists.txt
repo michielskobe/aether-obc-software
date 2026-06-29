@@ -39,7 +39,8 @@ add_executable(${CMAKE_PROJECT_NAME}
     Core/Src/command_interface.c
     Core/Src/can.c
     Core/Src/data_acquisition.c
-    Core/Src/iridium.c)
+    Core/Src/iridium.c
+    Core/Src/rxsm_interface.c)
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)

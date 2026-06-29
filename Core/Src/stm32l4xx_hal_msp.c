@@ -243,13 +243,16 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     PC0     ------> LPUART1_RX
     PC1     ------> LPUART1_TX
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
+    GPIO_InitStruct.Pin = RXSM_TX_Pin|RXSM_RX_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF8_LPUART1;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+    /* LPUART1 interrupt Init */
+    HAL_NVIC_SetPriority(LPUART1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(LPUART1_IRQn);
     /* USER CODE BEGIN LPUART1_MspInit 1 */
 
     /* USER CODE END LPUART1_MspInit 1 */
@@ -412,8 +415,10 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     PC0     ------> LPUART1_RX
     PC1     ------> LPUART1_TX
     */
-    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_0|GPIO_PIN_1);
+    HAL_GPIO_DeInit(GPIOC, RXSM_TX_Pin|RXSM_RX_Pin);
 
+    /* LPUART1 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(LPUART1_IRQn);
     /* USER CODE BEGIN LPUART1_MspDeInit 1 */
 
     /* USER CODE END LPUART1_MspDeInit 1 */

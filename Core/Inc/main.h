@@ -81,6 +81,12 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define GNSS_CB_SHDN_Pin GPIO_PIN_15
 #define GNSS_CB_SHDN_GPIO_Port GPIOC
+#define RXSM_TX_Pin GPIO_PIN_0
+#define RXSM_TX_GPIO_Port GPIOC
+#define RXSM_RX_Pin GPIO_PIN_1
+#define RXSM_RX_GPIO_Port GPIOC
+#define RMU_CAM_TRIG_Pin GPIO_PIN_2
+#define RMU_CAM_TRIG_GPIO_Port GPIOA
 #define SD_CS_Pin GPIO_PIN_4
 #define SD_CS_GPIO_Port GPIOA
 #define SD_SHDN_Pin GPIO_PIN_4

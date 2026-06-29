@@ -34,6 +34,7 @@
 #include "mosaic_x5.h"
 #include "sd_spi.h"
 #include "iridium.h"
+#include "rxsm_interface.h"
 #include "stm32l4xx_hal_cortex.h"
 #include "stm32l4xx_hal_gpio.h"
 /* USER CODE END Includes */
@@ -89,7 +90,7 @@ const osThreadAttr_t SysOrchestrator_attributes = {
 osThreadId_t RMUManagerHandle;
 const osThreadAttr_t RMUManager_attributes = {
   .name = "RMUManager",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for GNSSManager */
@@ -176,6 +177,9 @@ const osMutexAttr_t SD_Card_Mutex_attr = {
   NULL,                                    // memory for control block   
   0U                                      // size for control block
 };
+
+/* RMU PV */
+static uint8_t rxsm_rx_byte;
 
 /* USER CODE END PV */
 
@@ -712,7 +716,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, GNSS_CB_SHDN_Pin|SD_SHDN_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, RMU_CAM_TRIG_Pin|SD_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, SHDN_Pin|PWR_EN_Pin, GPIO_PIN_RESET);
@@ -727,12 +731,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : SD_CS_Pin */
-  GPIO_InitStruct.Pin = SD_CS_Pin;
+  /*Configure GPIO pins : RMU_CAM_TRIG_Pin SD_CS_Pin */
+  GPIO_InitStruct.Pin = RMU_CAM_TRIG_Pin|SD_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(SD_CS_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : RXSM_SODS_Pin RXSM_SOE_Pin RXSM_LO_Pin FFU_EJECT_DETECT_Pin */
   GPIO_InitStruct.Pin = RXSM_SODS_Pin|RXSM_SOE_Pin|RXSM_LO_Pin|FFU_EJECT_DETECT_Pin;
@@ -878,6 +882,16 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         HAL_UART_DMAStop(huart);
 
         mosaic_x5_init(); // Re-initialize the mosaic-X5 UART reception
+    }
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &hlpuart1)
+    {
+      RXSM_PushByte(rxsm_rx_byte);
+      
+      HAL_UART_Receive_IT(&hlpuart1, &rxsm_rx_byte, 1);
     }
 }
 
@@ -1056,6 +1070,9 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
   }
 
+  // Signal the RMUManager to terminate itself by setting the RMU_SHUTDOWN_FLAG
+  // osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
+
   // Instruct EPS to turn on Iridium and IFS 5V power rails
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
@@ -1165,8 +1182,17 @@ void StartSystemOrchestrator(void *argument)
 void StartRMUManager(void *argument)
 {
   /* USER CODE BEGIN StartRMUManager */
+  // Initialize RXSM variables
+  RXSM_Init();
+
   // Wait for SystemOrchestrator to start up and set the RMU_STARTUP_FLAG before proceeding
   osThreadFlagsWait(RMU_STARTUP_FLAG, osFlagsWaitAny, osWaitForever);
+
+  // Start UART reception from RXSM
+  HAL_UART_Receive_IT(&hlpuart1, &rxsm_rx_byte, 1);
+
+  RXSM_Telecommand_t tc = {0};
+
   /* Infinite loop */
   for(;;)
   {
@@ -1179,10 +1205,17 @@ void StartRMUManager(void *argument)
       break;
     }
 
+    // Otherwise, resume normal RMU Manager functionality
+    if (RXSM_GetMessage(&tc))
+    {
+      RXSMInterface_ProcessMessage(&tc);
+    }
+
     osDelay(1);
   }
 
   // Terminate RMU Manager Task
+  HAL_UART_AbortReceive_IT(&hlpuart1);
   osThreadExit();
 
   /* USER CODE END StartRMUManager */
