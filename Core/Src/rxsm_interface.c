@@ -16,6 +16,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "rxsm_interface.h"
 #include "main.h"
+#include "cmsis_os.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -60,7 +61,10 @@ static struct
     uint16_t crc;
 } parser;
 
-extern CRC_HandleTypeDef hcrc; // Imported from main.c
+extern CRC_HandleTypeDef hcrc; // Declared in main.c
+extern osThreadId_t SysOrchestratorHandle; // Declared in main.c
+extern mission_mode_t mission_mode; // Declared in main.c
+
 /* Private function prototypes -----------------------------------------------*/
 static void HandleEpsPing(const RXSM_Telecommand_t *tc);
 static void HandleEpsBatteriesEnable(const RXSM_Telecommand_t *tc);
@@ -94,6 +98,9 @@ static void HandleCsCamera2Enable(const RXSM_Telecommand_t *tc);
 static void HandleCsCamera2Disable(const RXSM_Telecommand_t *tc);
 static void HandleCsSpiEnable(const RXSM_Telecommand_t *tc);
 static void HandleCsSpiDisable(const RXSM_Telecommand_t *tc);
+
+static void HandleSetTestMode(const RXSM_Telecommand_t *tc);
+static void HandleSetFlightMode(const RXSM_Telecommand_t *tc);
 
 /* Dispatch table ------------------------------------------------------------*/
 static const RXSMDispatchEntry_t dispatch_table[] =
@@ -131,6 +138,9 @@ static const RXSMDispatchEntry_t dispatch_table[] =
     {CS_CAMERA2_DISABLE_RXSM_ID,      HandleCsCamera2Disable},
     {CS_SPI_ENABLE_RXSM_ID,           HandleCsSpiEnable},
     {CS_SPI_DISABLE_RXSM_ID,          HandleCsSpiDisable},
+
+    {SYSTEM_SET_TEST_MODE_RXSM_ID,    HandleSetTestMode},
+    {SYSTEM_SET_FLIGHT_MODE_RXSM_ID,  HandleSetFlightMode},
 };
 
 /* Private user code ---------------------------------------------------------*/
@@ -340,6 +350,22 @@ static void HandleCsSpiDisable(const RXSM_Telecommand_t *tc){
     
     // Mirror command over CAN
     send_can_command(CS_SPI_DISABLE_CAN_ID, (uint8_t[]){0x00}, 1);
+}
+
+static void HandleSetTestMode(const RXSM_Telecommand_t *tc){
+    (void)tc;
+
+    mission_mode = MISSION_MODE_TEST;
+
+    osThreadFlagsSet(SysOrchestratorHandle, SYSTEM_MODE_SELECTED_FLAG);
+}
+
+static void HandleSetFlightMode(const RXSM_Telecommand_t *tc){
+    (void)tc;
+
+    mission_mode = MISSION_MODE_FLIGHT;
+
+    osThreadFlagsSet(SysOrchestratorHandle, SYSTEM_MODE_SELECTED_FLAG);
 }
 
 static uint16_t RXSM_ComputeCRC(const RXSM_Telecommand_t *tc)

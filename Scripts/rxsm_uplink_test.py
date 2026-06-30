@@ -83,13 +83,17 @@ if __name__ == "__main__":
     EPS_PING = 0x100  # example placeholder
     EPS_RAIL_ENABLE = 0x105
     EPS_RAIL_DISABLE = 0x106
+    OBC_TEST_MODE = 0x800
+    OBC_FLIGHT_MODE = 0x801
 
     PORT = "/dev/ttyUSB0"      # or "/dev/ttyUSB0"
     BAUD = 38400
-    for i in range(0,10):
+    #for i in range(0,10):
         # 1) Ping (no payload)
-        send_command(PORT, BAUD, EPS_PING)
+        #send_command(PORT, BAUD, EPS_PING)
 
         # 2) Command with payload
-        send_command(PORT, BAUD, EPS_RAIL_ENABLE, payload=b"\x10")
-    send_command(PORT, BAUD, EPS_RAIL_DISABLE, payload=b"\x10")
+        #send_command(PORT, BAUD, EPS_RAIL_ENABLE, payload=b"\x10")
+    #send_command(PORT, BAUD, EPS_RAIL_DISABLE, payload=b"\x10")
+
+    send_command(PORT, BAUD, OBC_TEST_MODE)

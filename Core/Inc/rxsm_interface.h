@@ -80,6 +80,10 @@ extern "C" {
 #define CS_SPI_ENABLE_RXSM_ID            CS_SPI_ENABLE_CAN_ID
 #define CS_SPI_DISABLE_RXSM_ID           CS_SPI_DISABLE_CAN_ID
 
+/* RXSM specific IDs - starting from 0x0800 (max CAN ID = 0x7FF)*/
+#define SYSTEM_SET_TEST_MODE_RXSM_ID    0x0800
+#define SYSTEM_SET_FLIGHT_MODE_RXSM_ID  0x0801
+
 #define RXSM_RX_BUFFER_SIZE 128
 
 typedef struct {

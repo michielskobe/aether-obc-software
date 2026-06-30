@@ -36,7 +36,12 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
+typedef enum
+{
+  MISSION_MODE_UNKNOWN = 0,
+  MISSION_MODE_TEST,
+  MISSION_MODE_FLIGHT
+} mission_mode_t;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -63,6 +68,7 @@ extern "C" {
 #define RMU_SHUTDOWN_FLAG           (1U << 14)
 #define ANTENNA_DEPLOYED_FLAG       (1U << 15) 
 #define IRIDIUM_TX_FLAG             (1u << 16)
+#define SYSTEM_MODE_SELECTED_FLAG   (1u << 17)
 
 #define IFS_3V3_RAIL_ID 0x01
 #define IFS_5V_RAIL_ID 0x02

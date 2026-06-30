@@ -54,6 +54,7 @@
 #define METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
 #define ANTENNA_DEPLOY_TIMEOUT_MS 25000 // 25 second time-out to allow antenna deployment before issuing fTPS deployment
 #define IFS_5V_ENABLE_TIMEOUT_MS 5000 // 5 second time-out to allow IFS 5V rail to enable before issuing burn-wire signals
+#define MODE_SELECTION_TIMEOUT_MS 30000 // 30 second time-out interval to allow the system to be put into test mode
 
 #define MANIFOLD_PRESSURE_THRESHOLD 0 /* TODO: define */
 #define ALTIMETER_PRESSURE_THRESHOLD 0 /* TODO: define */
@@ -156,6 +157,7 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
 /* USER CODE BEGIN PV */
 /* General PV */
 static volatile bool test_scenario = true;
+volatile mission_mode_t mission_mode = MISSION_MODE_UNKNOWN;
 
 /* Iridium PV */
 osTimerId_t iridium_off_timer;
@@ -989,6 +991,15 @@ void StartSystemOrchestrator(void *argument)
 
   // Wait until the SD card is initialised and ready
   osThreadFlagsWait(SD_CARD_INIT_FLAG, osFlagsWaitAny, osWaitForever);
+
+  // Allow the system to be put in test mode (no RXSM signals or IFS actuators) with a 30 second time-out
+  osThreadFlagsWait(SYSTEM_MODE_SELECTED_FLAG, osFlagsWaitAny, MODE_SELECTION_TIMEOUT_MS);
+
+  // In case mission mode is not set, default to flight mode
+  if (mission_mode == MISSION_MODE_UNKNOWN)
+  {
+    mission_mode = MISSION_MODE_FLIGHT;
+  }
 
   if (test_scenario){
     // For testing purposes, if the test_scenario flag is set, then skip waiting for the actual LO/SODS/SOE/ejection signals and just set the mission metadata values to indicate that they have already occurred
