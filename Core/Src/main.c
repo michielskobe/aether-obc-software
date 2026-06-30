@@ -156,7 +156,6 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
 };
 /* USER CODE BEGIN PV */
 /* General PV */
-static volatile bool test_scenario = true;
 volatile mission_mode_t mission_mode = MISSION_MODE_UNKNOWN;
 
 /* Iridium PV */
@@ -168,7 +167,7 @@ static IridiumCtx_t s_iridium; // Iridium driver context
 /* SD Card PV */
 static uint8_t sd_block[SD_BLOCK_SIZE];
 static uint16_t block_index = 0;
-static uint32_t current_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
+static uint32_t sd_write_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
 metadata_t mission_metadata = {0};
 
 osMutexId_t sd_mutex_id;  
@@ -1000,31 +999,19 @@ void StartSystemOrchestrator(void *argument)
   {
     mission_mode = MISSION_MODE_FLIGHT;
   }
-
-  if (test_scenario){
-    // For testing purposes, if the test_scenario flag is set, then skip waiting for the actual LO/SODS/SOE/ejection signals and just set the mission metadata values to indicate that they have already occurred
-    mission_metadata.rxsm_lo = 0xFF;
-    mission_metadata.rxsm_sods = 0xFF;
-    mission_metadata.rxsm_soe = 0xFF;
-    mission_metadata.ffu_ejection = 0xFF;
-    mission_metadata.last_written_sector = current_block_addr;
-    osMutexAcquire(sd_mutex_id, osWaitForever);
-    metadata_write(&mission_metadata); // Write the updated mission metadata back to the SD card
-    osMutexRelease(sd_mutex_id);
-  } 
  
-  // Read the mission metadata from the SD card and store it in the global mission_metadata variable
+  // Read the mission metadata from the SD card and store it in the global mission_metadata struct
   metadata_read(&mission_metadata);
   if (mission_metadata.last_written_sector < 3){
-    mission_metadata.last_written_sector = 3; // Ensure that the last written sector is not in the reserved area of the SD card
+    mission_metadata.last_written_sector = 4; // Ensure that the last written sector is not in the reserved area of the SD card
   } else if (mission_metadata.last_written_sector > 3){
-    current_block_addr = mission_metadata.last_written_sector ++; // Set the current block address to the next block after the last written sector
+    sd_write_block_addr = mission_metadata.last_written_sector ++; // Set the current block address to the next block after the last written sector
   }
 
   // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
-  // Only wait if LO has NOT already been triggered AND ejection has NOT already happened
+  // Only wait if in flight mode AND LO has NOT already been triggered AND ejection has NOT already happened
   // If LO has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_metadata.rxsm_lo != 0xFF && mission_metadata.ffu_ejection != 0xFF){
+  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.rxsm_lo != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG);
     // Set the rxsm_lo field in the mission metadata to 0xFF to indicate that LO has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_lo = 0xFF;
@@ -1033,13 +1020,13 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
   }
 
-  // Instruct EPS to switch to internal power
+  // Instruct EPS to switch to internal power in case this has not happened yet through RXSM uplink
   send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); 
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
-  // Only wait if SODS has NOT already been triggered AND ejection has NOT already happened
+  // Only wait if in flight mode AND SODS has NOT already been triggered AND ejection has NOT already happened
   // If SODS has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_metadata.rxsm_sods != 0xFF && mission_metadata.ffu_ejection != 0xFF){
+  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.rxsm_sods != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG);
     // Set the rxsm_sods field in the mission metadata to 0xFF to indicate that SODS has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_sods = 0xFF;
@@ -1052,9 +1039,9 @@ void StartSystemOrchestrator(void *argument)
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
 
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
-  // Only wait if SOE has NOT already been triggered AND ejection has NOT already happened
+  // Only wait if in flight mode AND SOE has NOT already been triggered AND ejection has NOT already happened
   // If SOE has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF){
+  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG);
     // Set the rxsm_soe field in the mission metadata to 0xFF to indicate that SOE has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_soe = 0xFF;
@@ -1074,8 +1061,8 @@ void StartSystemOrchestrator(void *argument)
   osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
 
   // Wait for the ejection signal before proceeding with the rest of the system startup sequence
-  // If ejection has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.ffu_ejection != 0xFF){
+  // Only wait if in flight mode, if ejection has already been triggered, then skip waiting and proceed immediately
+  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG);
     // Set the ffu_ejection field in the mission metadata to 0xFF to indicate that ejection has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.ffu_ejection = 0xFF;
@@ -1085,19 +1072,27 @@ void StartSystemOrchestrator(void *argument)
   }
 
   // Signal the RMUManager to terminate itself by setting the RMU_SHUTDOWN_FLAG
-  // osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
+  // Only do it in flight mode, so RXSM uplink can be used for testing purposes
+  if (mission_mode == MISSION_MODE_FLIGHT){
+    osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
+  }
 
-  // Instruct EPS to turn on Iridium and IFS 5V power rails
-  send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
+  // Instruct EPS to turn on Iridium 5V power rail
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
+  
 
-  // Issue antenna burn-wire ARM signal
-  send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+  // Instruct EPS to turn on IFS 5V power rail and start arming actuators (ONLY IN FLIGHT MODE)
+  if (mission_mode == MISSION_MODE_FLIGHT){
+    send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
 
-  osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, ANTENNA_DEPLOY_TIMEOUT_MS);
+    // Issue antenna burn-wire ARM signal
+    send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
 
-  // Issue CGG1 ARM signal
-  send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+    osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, ANTENNA_DEPLOY_TIMEOUT_MS);
+
+    // Issue CGG1 ARM signal
+    send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+  }
 
   // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
   osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
@@ -1142,45 +1137,43 @@ void StartSystemOrchestrator(void *argument)
         default:
           break;
       }
+    }
 
-      // ── State machine ──────────────────────────────────────────────
+    // 1. Manifold pressure drop → fire CGG2 (ONLY IN FLIGHT MODE)
+    if (mission_mode == MISSION_MODE_FLIGHT && !mission_metadata.cgg2_fired && manifold_pressure <= MANIFOLD_PRESSURE_THRESHOLD)
+    {
+      // Issue CGG2 ARM signal
+      send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+    }
 
-      // 1. Manifold pressure drop → fire CGG2
-      if (!mission_metadata.cgg2_fired && manifold_pressure <= MANIFOLD_PRESSURE_THRESHOLD)
-      {
-        // Issue CGG2 ARM signal
-        send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-      }
+    // 2. Altimeter + altitude thresholds crossed → deploy parachute (ONLY IN FLIGHT MODE)
+    if (mission_mode == MISSION_MODE_FLIGHT && !mission_metadata.bw2_fired && altimeter_pressure >= ALTIMETER_PRESSURE_THRESHOLD && altitude <= ALTITUDE_THRESHOLD)
+    {
+      send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+    }
 
-      // 2. Altimeter + altitude thresholds crossed → deploy parachute
-      if (!mission_metadata.bw2_fired && altimeter_pressure >= ALTIMETER_PRESSURE_THRESHOLD && altitude <= ALTITUDE_THRESHOLD)
-      {
-        send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-      }
+    // 3. Parachute open → fire CGG2 if not already fired (ONLY IN FLIGHT MODE)
+    if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.bw2_fired && !mission_metadata.cgg2_fired)
+    {
+      // Delay to ensure parachute has stabilized after deployment 
+      osDelay(pdMS_TO_TICKS(30000));
 
-      // 3. Parachute open → fire CGG2 if not already fired
-      if (mission_metadata.bw2_fired && !mission_metadata.cgg2_fired)
-      {
-        // Delay to ensure parachute has stabilized after deployment 
-        osDelay(pdMS_TO_TICKS(30000));
+      // Issue CGG2 ARM signal
+      send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+    }
 
-        // Issue CGG2 ARM signal
-        send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-      }
+    // 4. Landing detected (low altitude + low acceleration) → power off all except OBC + UHFCOM
+    if (altitude <= LANDED_ALTITUDE_THRESHOLD && accel <= LANDED_ACCEL_THRESHOLD)
+    {
+      // Disable unused power rails
+      send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
+      send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
 
-      // 4. Landing detected (low altitude + low acceleration) → power off all except OBC + UHFCOM
-      if (altitude <= LANDED_ALTITUDE_THRESHOLD && accel <= LANDED_ACCEL_THRESHOLD)
-      {
-        // Disable unused power rails
-        send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
-        send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
+      // Enable beacon mode
+      send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
 
-        // Enable beacon mode
-        send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-
-        // Start Iridium timer (5 minutes)
-        osTimerStart(iridium_off_timer, pdMS_TO_TICKS(300000));
-      }
+      // Start Iridium timer (5 minutes)
+      osTimerStart(iridium_off_timer, pdMS_TO_TICKS(300000));
     }
   }
   /* USER CODE END 5 */
@@ -1311,8 +1304,8 @@ void StartSDCardManager(void *argument)
   // Write a blank block to the first data block address to ensure the SD card is ready for subsequent writes
   osMutexAcquire(sd_mutex_id, osWaitForever);
   memset(sd_block, 0x00, SD_BLOCK_SIZE);
-  sd_write_block(current_block_addr, sd_block);
-  current_block_addr++;    
+  sd_write_block(sd_write_block_addr, sd_block);
+  sd_write_block_addr++;    
   osMutexRelease(sd_mutex_id);
 
   // Signal to SystemOrchestrator that SD card is ready
@@ -1336,13 +1329,13 @@ void StartSDCardManager(void *argument)
     if (block_index == SD_BLOCK_SIZE) {
         osMutexAcquire(sd_mutex_id, osWaitForever);
         for (int i = 0; i < 5; i++) { // Retry up to 5 times if write fails
-            if (sd_write_block(current_block_addr, sd_block) == 0) {
-                if (current_block_addr - mission_metadata.last_written_sector >= METADATA_UPDATE_INTERVAL) {
+            if (sd_write_block(sd_write_block_addr, sd_block) == 0) {
+                if (sd_write_block_addr - mission_metadata.last_written_sector >= METADATA_UPDATE_INTERVAL) {
                     // Update mission metadata with the new last written sector address (and updated GNSS data)
-                    mission_metadata.last_written_sector = current_block_addr;
+                    mission_metadata.last_written_sector = sd_write_block_addr;
                     metadata_write(&mission_metadata);
                 }
-                current_block_addr++;
+                sd_write_block_addr++;
                 break;
             }
             osDelay(100);
