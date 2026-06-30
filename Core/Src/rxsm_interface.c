@@ -17,7 +17,9 @@
 #include "rxsm_interface.h"
 #include "main.h"
 #include "cmsis_os.h"
+#include "stm32l4xx_hal_uart.h"
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /* Private typedef -----------------------------------------------------------*/
@@ -62,6 +64,7 @@ static struct
 } parser;
 
 extern CRC_HandleTypeDef hcrc; // Declared in main.c
+extern UART_HandleTypeDef hlpuart1; // Declared in main.c
 extern osThreadId_t SysOrchestratorHandle; // Declared in main.c
 extern mission_mode_t mission_mode; // Declared in main.c
 
@@ -365,7 +368,13 @@ static void HandleSetTestMode(const RXSM_Telecommand_t *tc){
 
     mission_mode = MISSION_MODE_TEST;
 
-    osThreadFlagsSet(SysOrchestratorHandle, SYSTEM_MODE_SELECTED_FLAG);
+    uint32_t flag = osThreadFlagsSet(SysOrchestratorHandle, SYSTEM_MODE_SELECTED_FLAG);
+
+    if ((int32_t)flag < 0){
+        RXSM_SendMessage(SYSTEM_SET_TEST_MODE_RXSM_ID, (uint8_t[]){0x00}, 1); // NOK reply
+    } else {
+        RXSM_SendMessage(SYSTEM_SET_TEST_MODE_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
+    }
 }
 
 static void HandleSetFlightMode(const RXSM_Telecommand_t *tc){
@@ -373,35 +382,65 @@ static void HandleSetFlightMode(const RXSM_Telecommand_t *tc){
 
     mission_mode = MISSION_MODE_FLIGHT;
 
-    osThreadFlagsSet(SysOrchestratorHandle, SYSTEM_MODE_SELECTED_FLAG);
+    uint32_t flag = osThreadFlagsSet(SysOrchestratorHandle, SYSTEM_MODE_SELECTED_FLAG);
+
+    if ((int32_t)flag < 0){
+        RXSM_SendMessage(SYSTEM_SET_FLIGHT_MODE_RXSM_ID, (uint8_t[]){0x00}, 1); // NOK reply
+    } else {
+        RXSM_SendMessage(SYSTEM_SET_FLIGHT_MODE_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
+    }
 }
 
 static void HandleSimulateLO(const RXSM_Telecommand_t *tc)
 {
     (void)tc;
 
-    osThreadFlagsSet(SysOrchestratorHandle, LO_VALID_EDGE_FLAG);
+    uint32_t flag = osThreadFlagsSet(SysOrchestratorHandle, LO_VALID_EDGE_FLAG);
+
+    if ((int32_t)flag < 0){
+        RXSM_SendMessage(SIMULATE_LO_RXSM_ID, (uint8_t[]){0x00}, 1); // NOK reply
+    } else {
+        RXSM_SendMessage(SIMULATE_LO_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
+    }
 }
 
 static void HandleSimulateSODS(const RXSM_Telecommand_t *tc)
 {
     (void)tc;
 
-    osThreadFlagsSet(SysOrchestratorHandle, SODS_VALID_EDGE_FLAG);
+     uint32_t flag = osThreadFlagsSet(SysOrchestratorHandle, SODS_VALID_EDGE_FLAG);
+
+    if ((int32_t)flag < 0){
+        RXSM_SendMessage(SIMULATE_SODS_RXSM_ID, (uint8_t[]){0x00}, 1); // NOK reply
+    } else {
+        RXSM_SendMessage(SIMULATE_SODS_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
+    }
 }
 
 static void HandleSimulateSOE(const RXSM_Telecommand_t *tc)
 {
     (void)tc;
 
-    osThreadFlagsSet(SysOrchestratorHandle, SOE_VALID_EDGE_FLAG);
+     uint32_t flag = osThreadFlagsSet(SysOrchestratorHandle, SOE_VALID_EDGE_FLAG);
+
+    if ((int32_t)flag < 0){
+        RXSM_SendMessage(SIMULATE_SOE_RXSM_ID, (uint8_t[]){0x00}, 1); // NOK reply
+    } else {
+        RXSM_SendMessage(SIMULATE_SOE_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
+    }
 }
 
 static void HandleSimulateEjection(const RXSM_Telecommand_t *tc)
 {
     (void)tc;
 
-    osThreadFlagsSet(SysOrchestratorHandle, EJECTION_VALID_EDGE_FLAG);
+     uint32_t flag = osThreadFlagsSet(SysOrchestratorHandle, EJECTION_VALID_EDGE_FLAG);
+
+    if ((int32_t)flag < 0){
+        RXSM_SendMessage(SIMULATE_EJECTION_RXSM_ID, (uint8_t[]){0x00}, 1); // NOK reply
+    } else {
+        RXSM_SendMessage(SIMULATE_EJECTION_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
+    }
 }
 
 static uint16_t RXSM_ComputeCRC(const RXSM_Telecommand_t *tc)
@@ -550,3 +589,45 @@ void RXSMInterface_ProcessMessage(const RXSM_Telecommand_t *tc){
     }
 }
 
+int RXSM_SendMessage(const uint16_t id, const uint8_t *payload, const uint8_t len)
+{
+    if (len > RXSM_TC_MAX_PAYLOAD || (payload == NULL && len > 0))
+    {
+        return -1;
+    }
+
+    uint8_t frame[RXSM_TC_OVERHEAD_BYTES + len];
+    uint16_t idx = 0;
+
+    // Sync
+    frame[idx++] = RXSM_TC_SYNC1;
+    frame[idx++] = RXSM_TC_SYNC2;
+
+    // ID
+    frame[idx++] = (uint8_t)(id >> 8);
+    frame[idx++] = (uint8_t)(id & 0xFF);
+
+    // Length
+    frame[idx++] = len;
+
+    // Payload
+    if (len > 0)
+    {
+        memcpy(&frame[idx], payload, len);
+        idx += len;
+    }
+
+    // CRC
+    uint32_t crc_input_len = RXSM_TC_OVERHEAD_BYTES - 2 + len;
+    uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)frame, crc_input_len);
+
+    frame[idx++] = (uint8_t)(crc >> 8);
+    frame[idx++] = (uint8_t)(crc & 0xFF);
+
+    // Send out via UART
+    if (HAL_UART_Transmit_IT(&hlpuart1, frame, idx) != HAL_OK){
+        return -1;
+    }
+
+    return 0;
+}

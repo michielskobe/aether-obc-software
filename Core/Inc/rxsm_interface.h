@@ -120,9 +120,23 @@ bool RXSM_GetMessage(RXSM_Telecommand_t *tc);
 /**
  * @brief  Dispatch an incoming RXSM message to the appropriate handler.
  *         Call from the RMU Manager task whenever a message is dequeued.
+ *
+ * @param tc RXSM Telecommand to be processed.
+ * 
  */
-
 void RXSMInterface_ProcessMessage(const RXSM_Telecommand_t *tc);
+
+/**
+ * @brief Send a message via UART to the RXSM.
+ *
+ * @param id ID of message to be transmitted.
+ * @param payload Payload of message to be transmitted.
+ * @param len Payload length, zero in case of no payload.
+ * 
+ * @retval  0 Transmission was successful.
+ * @retval -1 Transmission was bot successful.
+ */
+int RXSM_SendMessage(const uint16_t id, const uint8_t *payload, const uint8_t len);
 
 #ifdef __cplusplus
 }
