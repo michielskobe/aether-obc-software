@@ -1011,8 +1011,9 @@ void StartSystemOrchestrator(void *argument)
   }
 
   // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
-  // If LO has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.rxsm_lo != 0xFF){
+  // Only wait if LO has NOT already been triggered AND ejection has NOT already happened
+  // If LO has already been triggered OR ejection has already happened, skip waiting and proceed immediately
+  if (mission_metadata.rxsm_lo != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG);
     // Set the rxsm_lo field in the mission metadata to 0xFF to indicate that LO has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_lo = 0xFF;
@@ -1025,8 +1026,9 @@ void StartSystemOrchestrator(void *argument)
   send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); 
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
-  // If SODS has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.rxsm_sods != 0xFF){
+  // Only wait if SODS has NOT already been triggered AND ejection has NOT already happened
+  // If SODS has already been triggered OR ejection has already happened, skip waiting and proceed immediately
+  if (mission_metadata.rxsm_sods != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG);
     // Set the rxsm_sods field in the mission metadata to 0xFF to indicate that SODS has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_sods = 0xFF;
@@ -1039,8 +1041,9 @@ void StartSystemOrchestrator(void *argument)
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
 
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
-  // If SOE has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.rxsm_soe != 0xFF){
+  // Only wait if SOE has NOT already been triggered AND ejection has NOT already happened
+  // If SOE has already been triggered OR ejection has already happened, skip waiting and proceed immediately
+  if (mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG);
     // Set the rxsm_soe field in the mission metadata to 0xFF to indicate that SOE has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_soe = 0xFF;
@@ -1061,7 +1064,7 @@ void StartSystemOrchestrator(void *argument)
 
   // Wait for the ejection signal before proceeding with the rest of the system startup sequence
   // If ejection has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.ffu_ejection == 0){
+  if (mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG);
     // Set the ffu_ejection field in the mission metadata to 0xFF to indicate that ejection has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.ffu_ejection = 0xFF;
