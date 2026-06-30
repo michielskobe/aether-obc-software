@@ -80,11 +80,15 @@ def send_command(port: str, baud: int, msg_id: int, payload: bytes = b""):
 # -----------------------------
 if __name__ == "__main__":
     # Example IDs from your header (replace with real ones if needed)
-    EPS_PING = 0x100  # example placeholder
-    EPS_RAIL_ENABLE = 0x105
-    EPS_RAIL_DISABLE = 0x106
-    OBC_TEST_MODE = 0x800
-    OBC_FLIGHT_MODE = 0x801
+    EPS_PING            = 0x100  # example placeholder
+    EPS_RAIL_ENABLE     = 0x105
+    EPS_RAIL_DISABLE    = 0x106
+    OBC_TEST_MODE       = 0x800
+    OBC_FLIGHT_MODE     = 0x801
+    SIMULATE_LO         = 0x802
+    SIMULATE_SODS       = 0x803
+    SIMULATE_SOE        = 0x804
+    SIMULATE_EJECTION   = 0x805
 
     PORT = "/dev/ttyUSB0"      # or "/dev/ttyUSB0"
     BAUD = 38400
@@ -96,4 +100,4 @@ if __name__ == "__main__":
         #send_command(PORT, BAUD, EPS_RAIL_ENABLE, payload=b"\x10")
     #send_command(PORT, BAUD, EPS_RAIL_DISABLE, payload=b"\x10")
 
-    send_command(PORT, BAUD, OBC_TEST_MODE)
+    send_command(PORT, BAUD, SIMULATE_EJECTION)

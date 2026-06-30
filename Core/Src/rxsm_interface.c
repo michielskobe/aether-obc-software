@@ -101,6 +101,10 @@ static void HandleCsSpiDisable(const RXSM_Telecommand_t *tc);
 
 static void HandleSetTestMode(const RXSM_Telecommand_t *tc);
 static void HandleSetFlightMode(const RXSM_Telecommand_t *tc);
+static void HandleSimulateLO(const RXSM_Telecommand_t *tc);
+static void HandleSimulateSODS(const RXSM_Telecommand_t *tc);
+static void HandleSimulateSOE(const RXSM_Telecommand_t *tc);
+static void HandleSimulateEjection(const RXSM_Telecommand_t *tc);
 
 /* Dispatch table ------------------------------------------------------------*/
 static const RXSMDispatchEntry_t dispatch_table[] =
@@ -141,6 +145,10 @@ static const RXSMDispatchEntry_t dispatch_table[] =
 
     {SYSTEM_SET_TEST_MODE_RXSM_ID,    HandleSetTestMode},
     {SYSTEM_SET_FLIGHT_MODE_RXSM_ID,  HandleSetFlightMode},
+    {SIMULATE_LO_RXSM_ID,             HandleSimulateLO},
+    {SIMULATE_SODS_RXSM_ID,           HandleSimulateSODS},
+    {SIMULATE_SOE_RXSM_ID,            HandleSimulateSOE},
+    {SIMULATE_EJECTION_RXSM_ID,       HandleSimulateEjection},
 };
 
 /* Private user code ---------------------------------------------------------*/
@@ -366,6 +374,34 @@ static void HandleSetFlightMode(const RXSM_Telecommand_t *tc){
     mission_mode = MISSION_MODE_FLIGHT;
 
     osThreadFlagsSet(SysOrchestratorHandle, SYSTEM_MODE_SELECTED_FLAG);
+}
+
+static void HandleSimulateLO(const RXSM_Telecommand_t *tc)
+{
+    (void)tc;
+
+    osThreadFlagsSet(SysOrchestratorHandle, LO_VALID_EDGE_FLAG);
+}
+
+static void HandleSimulateSODS(const RXSM_Telecommand_t *tc)
+{
+    (void)tc;
+
+    osThreadFlagsSet(SysOrchestratorHandle, SODS_VALID_EDGE_FLAG);
+}
+
+static void HandleSimulateSOE(const RXSM_Telecommand_t *tc)
+{
+    (void)tc;
+
+    osThreadFlagsSet(SysOrchestratorHandle, SOE_VALID_EDGE_FLAG);
+}
+
+static void HandleSimulateEjection(const RXSM_Telecommand_t *tc)
+{
+    (void)tc;
+
+    osThreadFlagsSet(SysOrchestratorHandle, EJECTION_VALID_EDGE_FLAG);
 }
 
 static uint16_t RXSM_ComputeCRC(const RXSM_Telecommand_t *tc)

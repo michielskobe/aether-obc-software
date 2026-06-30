@@ -83,6 +83,10 @@ extern "C" {
 /* RXSM specific IDs - starting from 0x0800 (max CAN ID = 0x7FF)*/
 #define SYSTEM_SET_TEST_MODE_RXSM_ID    0x0800
 #define SYSTEM_SET_FLIGHT_MODE_RXSM_ID  0x0801
+#define SIMULATE_LO_RXSM_ID             0x0802
+#define SIMULATE_SODS_RXSM_ID           0x0803
+#define SIMULATE_SOE_RXSM_ID            0x0804
+#define SIMULATE_EJECTION_RXSM_ID       0x0805
 
 #define RXSM_RX_BUFFER_SIZE 128
 
