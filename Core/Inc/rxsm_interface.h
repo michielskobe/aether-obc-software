@@ -87,6 +87,7 @@ extern "C" {
 #define SIMULATE_SODS_RXSM_ID           0x0803
 #define SIMULATE_SOE_RXSM_ID            0x0804
 #define SIMULATE_EJECTION_RXSM_ID       0x0805
+#define EPS_RADIO_SILENCE_RXSM_ID       0x0806
 
 #define RXSM_RX_BUFFER_SIZE 128
 

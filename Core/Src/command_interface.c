@@ -19,7 +19,9 @@
 #include "command_interface.h"
 #include "data_packet.h"
 #include "main.h"
+#include "rxsm_interface.h"
 #include "sd_spi.h"
+#include <stdbool.h>
 
 /* Private typedef -----------------------------------------------------------*/
 typedef void (*CanMessageHandler_t)(const can_rx_msg_t *msg);
@@ -46,6 +48,7 @@ static const uint8_t ACK_DATA[] = {0xFF}; // Data payload for acknowledging rece
 extern osThreadId_t SysOrchestratorHandle; // Declared in main.c, used to set flags from command handlers
 extern metadata_t mission_metadata; // Declared in main.c
 extern osMutexId_t sd_mutex_id; // Declared in main.c, used to synchronize access to SD card from command handlers
+extern mission_mode_t mission_mode; // Declared in main.c
 
 /* Private function prototypes -----------------------------------------------*/
 static void HandleEpsPingReply(const can_rx_msg_t *msg);
@@ -134,34 +137,34 @@ static const CanDispatchEntry_t dispatch_table[] =
     {CS_POWER_CYCLE_CAN_ID,                 HandleCsPowerCycle}
 };
 
-/* Public user code ---------------------------------------------------------*/
-
-void CommandInterface_ProcessMessage(const can_rx_msg_t *msg) {
-    // Clear any pending command that matches the received reply ID to prevent unnecessary retries
-    can_pending_clear(msg->RxHeader.StdId);
-    
-    for (size_t i = 0; i < ARRAY_SIZE(dispatch_table); i++)
-    {
-        if (dispatch_table[i].id == msg->RxHeader.StdId)
-        {
-            dispatch_table[i].handler(msg);
-            return;
-        }
-    }
-}
-
 /* Private user code ---------------------------------------------------------*/
 
-/* ── EPS handlers ───────────────────────────────────────────────────────── */
+static inline bool RXSM_DownlinkEnabled(void)
+{
+    return mission_mode == MISSION_MODE_TEST || mission_metadata.rxsm_lo != 0xFF;
+}
+
+static void DownlinkCanReply(const uint16_t rxsm_id, const can_rx_msg_t *msg)
+{
+    if (!RXSM_DownlinkEnabled())
+    {
+        return;
+    }
+
+    RXSM_SendMessage(rxsm_id, msg->RxData, msg->RxHeader.DLC);
+}
+
+/* EPS handlers */
 
 static void HandleEpsPingReply(const can_rx_msg_t *msg)
 {
-    // Handle EPS ping reply if needed
-    (void)msg;
+    DownlinkCanReply(EPS_PING_RXSM_ID, msg);
 }
 
 static void HandleEpsBatteriesEnableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(EPS_BATTERIES_ENABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Batteries enabled NOK - retry command
     {
         send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -170,6 +173,8 @@ static void HandleEpsBatteriesEnableReply(const can_rx_msg_t *msg)
 
 static void HandleEpsBatteriesDisableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(EPS_BATTERIES_DISABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Batteries disabled NOK - retry command
     {
         send_can_command_tracked(EPS_BATTERIES_DISABLE_CAN_ID, EPS_BATTERIES_DISABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -178,6 +183,8 @@ static void HandleEpsBatteriesDisableReply(const can_rx_msg_t *msg)
 
 static void HandleEpsChargingEnableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(EPS_CHARGING_ENABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Charging enabled NOK - retry command
     {
         send_can_command_tracked(EPS_CHARGING_ENABLE_CAN_ID, EPS_CHARGING_ENABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -185,6 +192,8 @@ static void HandleEpsChargingEnableReply(const can_rx_msg_t *msg)
 }
 static void HandleEpsChargingDisableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(EPS_CHARGING_DISABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Charging disabled NOK - retry command
     {
         send_can_command_tracked(EPS_CHARGING_DISABLE_CAN_ID, EPS_CHARGING_DISABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -193,6 +202,8 @@ static void HandleEpsChargingDisableReply(const can_rx_msg_t *msg)
 
 static void HandleEpsRailEnableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(EPS_RAIL_ENABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Rail enabled NOK - retry command
     {
         send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, &msg->RxData[1], 1);
@@ -201,6 +212,8 @@ static void HandleEpsRailEnableReply(const can_rx_msg_t *msg)
 
 static void HandleEpsRailDisableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(EPS_RAIL_DISABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Rail disabled NOK - retry command
     {
         send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, &msg->RxData[1], 1);
@@ -209,6 +222,8 @@ static void HandleEpsRailDisableReply(const can_rx_msg_t *msg)
 
 static void HandleEpsPowerCycleReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(EPS_POWER_CYCLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Power cycle command NOK - retry command
     {
         send_can_command_tracked(EPS_POWER_CYCLE_CAN_ID, EPS_POWER_CYCLE_CAN_REPLY_ID, &msg->RxData[1], 1);
@@ -217,20 +232,20 @@ static void HandleEpsPowerCycleReply(const can_rx_msg_t *msg)
 
 static void HandleEpsRadioSilenceAck(const can_rx_msg_t *msg)
 {
-    // Handle acknowledgment of radio silence
-    (void)msg;
+    DownlinkCanReply(EPS_RADIO_SILENCE_RXSM_ID, msg);
 }
 
-/* ── IFS handlers ───────────────────────────────────────────────────────── */
+/* IFS handlers  */
 
 static void HandleIfsPingReply(const can_rx_msg_t *msg)
 {
-    // Handle IFS ping reply if needed
-    (void)msg;
+    DownlinkCanReply(IFS_PING_RXSM_ID, msg);
 }
 
 static void HandleIfsArmBw1Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_ARM_BW1_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0xFF)
     {
         // Burn wire armed successfully, advance to FIRE
@@ -254,6 +269,8 @@ static void HandleIfsArmBw1Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsFireBw1Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_FIRE_BW1_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
         if ((msg->RxData[1] & (1 << 0)) || (msg->RxData[1] & (1 << 1))) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
@@ -273,6 +290,8 @@ static void HandleIfsFireBw1Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsArmBw2Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_ARM_BW2_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0xFF)
     {
         // Burn wire armed successfully, advance to FIRE
@@ -297,6 +316,8 @@ static void HandleIfsArmBw2Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsFireBw2Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_FIRE_BW2_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
         if ((msg->RxData[1] & (1 << 0)) || (msg->RxData[1] & (1 << 1))) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
@@ -316,6 +337,8 @@ static void HandleIfsFireBw2Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsArmCgg1Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_ARM_CGG1_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0xFF)
     {
         // CGG1 armed successfully, advance to FIRE
@@ -340,6 +363,8 @@ static void HandleIfsArmCgg1Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsFireCgg1Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_FIRE_CGG1_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
         if ((msg->RxData[1] & (1 << 0)) || (msg->RxData[1] & (1 << 1))) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
@@ -359,6 +384,8 @@ static void HandleIfsFireCgg1Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsArmCgg2Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_ARM_CGG2_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0xFF)
     {
         // CGG2 armed successfully, advance to FIRE
@@ -383,6 +410,8 @@ static void HandleIfsArmCgg2Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsFireCgg2Reply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_FIRE_CGG2_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // FIRE command NOK
     {
         if ((msg->RxData[1] & (1 << 0)) || (msg->RxData[1] & (1 << 1))) // Bit 0 indicates IllegalTransition, Bit 1 indicates ActuatorBusy - if either is set, retry the ARM command
@@ -402,6 +431,8 @@ static void HandleIfsFireCgg2Reply(const can_rx_msg_t *msg)
 
 static void HandleIfsActuatorResetReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(IFS_ACTUATOR_RESET_RXSM_ID, msg);
+
    if (msg->RxData[0] == 0x00) // ACTUATOR RESET command NOK - retry command
    {
     send_can_command_tracked(IFS_ACTUATOR_RESET_CAN_ID, IFS_ACTUATOR_RESET_CAN_REPLY_ID, CMD_DATA, 1);
@@ -481,16 +512,17 @@ static void HandleIfsFireDecay(const can_rx_msg_t *msg)
     }
 }
 
-/* ── UHFCOM handlers ────────────────────────────────────────────────────── */
+/* UHFCOM handlers */
 
 static void HandleUhfcomPingReply(const can_rx_msg_t *msg)
 {
-    // Handle UHFCOM ping reply if needed
-    (void)msg;
+    DownlinkCanReply(UHFCOM_PING_RXSM_ID, msg);
 }
 
 static void HandleUhfcomBeaconEnableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(UHFCOM_BEACON_ENABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00)
     {
         // Send GNSS data to UHFCOM
@@ -503,6 +535,8 @@ static void HandleUhfcomBeaconEnableReply(const can_rx_msg_t *msg)
 
 static void HandleUhfcomBeaconDisableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(UHFCOM_BEACON_DISABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00)
     {
         // Retry disabling UHFCOM beacon
@@ -512,6 +546,8 @@ static void HandleUhfcomBeaconDisableReply(const can_rx_msg_t *msg)
 
 static void HandleUhfcomBeaconDataReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(UHFCOM_BEACON_DATA_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00)
     {
         // Retry sending GNSS data to UHFCOM
@@ -528,15 +564,17 @@ static void HandleUhfcomWakeUp(const can_rx_msg_t *msg)
     send_can_command(UHFCOM_WAKE_UP_CAN_REPLY_ID, ACK_DATA, 1);
 }
 
-/* ── CS handlers ────────────────────────────────────────────────────────── */
+/* CS handlers */
 
 static void HandleCsPingReply(const can_rx_msg_t *msg)
 {
-    // Handle CS ping reply if needed
+    DownlinkCanReply(CS_PING_RXSM_ID, msg);
 }
 
 static void HandleCsCamera1EnableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(CS_CAMERA1_ENABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Camera 1 system failed to be enabled, retry command
     {
         send_can_command_tracked(CS_CAMERA1_ENABLE_CAN_ID, CS_CAMERA1_ENABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -545,6 +583,8 @@ static void HandleCsCamera1EnableReply(const can_rx_msg_t *msg)
 
 static void HandleCsCamera1DisableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(CS_CAMERA1_DISABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Camera 1 system failed to be disabled, retry command
     {
         send_can_command_tracked(CS_CAMERA1_DISABLE_CAN_ID, CS_CAMERA1_DISABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -553,6 +593,8 @@ static void HandleCsCamera1DisableReply(const can_rx_msg_t *msg)
 
 static void HandleCsCamera2EnableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(CS_CAMERA2_ENABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Camera 2 system failed to be enabled, retry command
     {
         send_can_command_tracked(CS_CAMERA2_ENABLE_CAN_ID, CS_CAMERA2_ENABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -561,6 +603,8 @@ static void HandleCsCamera2EnableReply(const can_rx_msg_t *msg)
 
 static void HandleCsCamera2DisableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(CS_CAMERA2_DISABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Camera 2 system failed to be disabled, retry command
     {
         send_can_command_tracked(CS_CAMERA2_DISABLE_CAN_ID, CS_CAMERA2_DISABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -569,6 +613,8 @@ static void HandleCsCamera2DisableReply(const can_rx_msg_t *msg)
 
 static void HandleCsSpiEnableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(CS_SPI_ENABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Camera SPI interface failed to be enabled, retry command
     {
         send_can_command_tracked(CS_SPI_ENABLE_CAN_ID, CS_SPI_ENABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -577,6 +623,8 @@ static void HandleCsSpiEnableReply(const can_rx_msg_t *msg)
 
 static void HandleCsSpiDisableReply(const can_rx_msg_t *msg)
 {
+    DownlinkCanReply(CS_SPI_DISABLE_RXSM_ID, msg);
+
     if (msg->RxData[0] == 0x00) // Camera SPI interface failed to be disabled, retry command
     {
         send_can_command_tracked(CS_SPI_DISABLE_CAN_ID, CS_SPI_DISABLE_CAN_REPLY_ID, CMD_DATA, 1);
@@ -602,4 +650,20 @@ static void HandleCsPowerCycle(const can_rx_msg_t *msg)
 
     // Instruct the EPS to power cycle the camera system 5V rail
     send_can_command_tracked(EPS_POWER_CYCLE_CAN_ID, EPS_POWER_CYCLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
+}
+
+/* Public user code ---------------------------------------------------------*/
+
+void CommandInterface_ProcessMessage(const can_rx_msg_t *msg) {
+    // Clear any pending command that matches the received reply ID to prevent unnecessary retries
+    can_pending_clear(msg->RxHeader.StdId);
+    
+    for (size_t i = 0; i < ARRAY_SIZE(dispatch_table); i++)
+    {
+        if (dispatch_table[i].id == msg->RxHeader.StdId)
+        {
+            dispatch_table[i].handler(msg);
+            return;
+        }
+    }
 }
