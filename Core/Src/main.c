@@ -51,9 +51,10 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
+#define SD_INIT_RETRIES_PER_POWER_CYCLE   3
+#define SD_STARTUP_RETRY_LIMIT            5
+#define SD_METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
 #define ANTENNA_DEPLOY_TIMEOUT_MS 25000 // 25 second time-out to allow antenna deployment before issuing fTPS deployment
-#define IFS_5V_ENABLE_TIMEOUT_MS 5000 // 5 second time-out to allow IFS 5V rail to enable before issuing burn-wire signals
 #define MODE_SELECTION_TIMEOUT_MS 30000 // 30 second time-out interval to allow the system to be put into test mode
 
 #define MANIFOLD_PRESSURE_THRESHOLD 0 /* TODO: define */
@@ -1293,12 +1294,50 @@ void StartDataAcquisition(void *argument)
 void StartSDCardManager(void *argument)
 {
   /* USER CODE BEGIN StartSDCardManager */
+  // Enable SD card power (P-MOSFET gate low)
+  HAL_GPIO_WritePin(SD_SHDN_GPIO_Port, SD_SHDN_Pin, GPIO_PIN_RESET);
+  osDelay(50);   // Allow power rail to stabilize
+
+  uint32_t powerCycleCount = 0;
+  bool sd_available = false;
+  bool startup_released = false;
 
   // Initialize SD card
-  HAL_GPIO_WritePin(SD_SHDN_GPIO_Port, SD_SHDN_Pin, GPIO_PIN_RESET);
-  while (sd_init() != 0) {
-    // Initialization failed, retry after a delay
-    osDelay(100);
+  while (!sd_available)
+  {
+    // Try  few times before power cycling
+    for (int retry = 0; retry < SD_INIT_RETRIES_PER_POWER_CYCLE; retry++)
+    {
+        if (sd_init() == 0)
+        {
+            sd_available = true;
+            break;
+        }
+
+        osDelay(100);
+    }
+
+    if (sd_available)
+    {
+        break;
+    }
+
+    powerCycleCount++;
+
+    // After N power cycles, allow the rest of the system to continue
+    if (!startup_released && powerCycleCount >= SD_STARTUP_RETRY_LIMIT)
+    {
+        startup_released = true;
+
+        osThreadFlagsSet(SysOrchestratorHandle, SD_CARD_INIT_FLAG);
+    }
+
+    // Power cycle the SD card
+    HAL_GPIO_WritePin(SD_SHDN_GPIO_Port, SD_SHDN_Pin, GPIO_PIN_SET);   // OFF
+    osDelay(200);
+
+    HAL_GPIO_WritePin(SD_SHDN_GPIO_Port, SD_SHDN_Pin, GPIO_PIN_RESET); // ON
+    osDelay(200);
   }
 
   // Write a blank block to the first data block address to ensure the SD card is ready for subsequent writes
@@ -1330,7 +1369,7 @@ void StartSDCardManager(void *argument)
         osMutexAcquire(sd_mutex_id, osWaitForever);
         for (int i = 0; i < 5; i++) { // Retry up to 5 times if write fails
             if (sd_write_block(sd_write_block_addr, sd_block) == 0) {
-                if (sd_write_block_addr - mission_metadata.last_written_sector >= METADATA_UPDATE_INTERVAL) {
+                if (sd_write_block_addr - mission_metadata.last_written_sector >= SD_METADATA_UPDATE_INTERVAL) {
                     // Update mission metadata with the new last written sector address (and updated GNSS data)
                     mission_metadata.last_written_sector = sd_write_block_addr;
                     metadata_write(&mission_metadata);
