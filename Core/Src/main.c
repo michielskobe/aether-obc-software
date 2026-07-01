@@ -1036,6 +1036,9 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id);
   }
 
+  // Signal the RMUManager to turn on the RMU camera by setting the RMU_CAMERA_TRIGGER_FLAG
+  osThreadFlagsSet(RMUManagerHandle, RMU_CAMERA_TRIGGER_FLAG);
+
   // Instruct EPS to turn on camera system power rail
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
 
@@ -1213,7 +1216,16 @@ void StartRMUManager(void *argument)
       break;
     }
 
-    // Otherwise, resume normal RMU Manager functionality
+    // Check for the RMU_CAMERA_TRIGGER_FLAG to know when to enable the RMU camera (non-blocking)
+    flags = osThreadFlagsWait(RMU_CAMERA_TRIGGER_FLAG, osFlagsWaitAny, 0);
+    
+    // If the RMU_CAMERA_TRIGGER_FLAG is set, assert the camera trigger GPIO signal
+    if ((int32_t)flags >= 0 && (flags & RMU_CAMERA_TRIGGER_FLAG))
+    {
+      HAL_GPIO_WritePin(RMU_CAM_TRIG_GPIO_Port, RMU_CAM_TRIG_Pin, GPIO_PIN_SET);;
+    }
+
+    // Otherwise, resume RXSM communication functionality
     if (RXSM_GetMessage(&tc))
     {
       RXSMInterface_ProcessMessage(&tc);
@@ -1222,8 +1234,15 @@ void StartRMUManager(void *argument)
     osDelay(1);
   }
 
-  // Terminate RMU Manager Task
+  // Broken out of main loop, initialise RMU Manager Task termination
+
+  // De-assert the camera trigger GPIO signal
+  HAL_GPIO_WritePin(RMU_CAM_TRIG_GPIO_Port, RMU_CAM_TRIG_Pin, GPIO_PIN_RESET);
+
+  // Stop LPUART1 RX
   HAL_UART_AbortReceive_IT(&hlpuart1);
+
+  // Terminate RMU Manager Task
   osThreadExit();
 
   /* USER CODE END StartRMUManager */
