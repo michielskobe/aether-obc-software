@@ -49,7 +49,8 @@ typedef enum
 /* Private macro -------------------------------------------------------------*/
 
 /* Private variables ---------------------------------------------------------*/
-static volatile uint8_t rxsm_rx_buffer[RXSM_RX_BUFFER_SIZE];
+static uint8_t rxsm_rx_buffer[RXSM_RX_BUFFER_SIZE];
+static uint8_t rxsm_tx_frame[RXSM_TC_MAX_PACKET];
 static volatile uint16_t rxsm_rx_head;
 static volatile uint16_t rxsm_rx_tail;
 
@@ -596,36 +597,35 @@ int RXSM_SendMessage(const uint16_t id, const uint8_t *payload, const uint8_t le
         return -1;
     }
 
-    uint8_t frame[RXSM_TC_OVERHEAD_BYTES + len];
     uint16_t idx = 0;
 
     // Sync
-    frame[idx++] = RXSM_TC_SYNC1;
-    frame[idx++] = RXSM_TC_SYNC2;
+    rxsm_tx_frame[idx++] = RXSM_TC_SYNC1;
+    rxsm_tx_frame[idx++] = RXSM_TC_SYNC2;
 
     // ID
-    frame[idx++] = (uint8_t)(id >> 8);
-    frame[idx++] = (uint8_t)(id & 0xFF);
+    rxsm_tx_frame[idx++] = (uint8_t)(id >> 8);
+    rxsm_tx_frame[idx++] = (uint8_t)(id & 0xFF);
 
     // Length
-    frame[idx++] = len;
+    rxsm_tx_frame[idx++] = len;
 
     // Payload
     if (len > 0)
     {
-        memcpy(&frame[idx], payload, len);
+        memcpy(&rxsm_tx_frame[idx], payload, len);
         idx += len;
     }
 
     // CRC
     uint32_t crc_input_len = RXSM_TC_OVERHEAD_BYTES - 2 + len;
-    uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)frame, crc_input_len);
+    uint32_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)rxsm_tx_frame, crc_input_len);
 
-    frame[idx++] = (uint8_t)(crc >> 8);
-    frame[idx++] = (uint8_t)(crc & 0xFF);
+    rxsm_tx_frame[idx++] = (uint8_t)(crc >> 8);
+    rxsm_tx_frame[idx++] = (uint8_t)(crc & 0xFF);
 
     // Send out via UART
-    if (HAL_UART_Transmit_IT(&hlpuart1, frame, idx) != HAL_OK){
+    if (HAL_UART_Transmit_IT(&hlpuart1, rxsm_tx_frame, idx) != HAL_OK){
         return -1;
     }
 

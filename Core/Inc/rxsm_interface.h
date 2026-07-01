@@ -35,14 +35,6 @@ extern "C" {
 #define RXSM_TC_MAX_PACKET           64U
 #define RXSM_TC_MAX_PAYLOAD          (RXSM_TC_MAX_PACKET - RXSM_TC_OVERHEAD_BYTES)
 
-/* Packet field offsets */
-#define RXSM_TC_OFFSET_SYNC1         0U
-#define RXSM_TC_OFFSET_SYNC2         1U
-#define RXSM_TC_OFFSET_MSGID_H       2U
-#define RXSM_TC_OFFSET_MSGID_L       3U
-#define RXSM_TC_OFFSET_MSGLEN        4U
-#define RXSM_TC_OFFSET_DATA          5U
-
 /* EPS IDs — mirrored CAN IDs */
 #define EPS_PING_RXSM_ID                 EPS_PING_CAN_ID
 #define EPS_BATTERIES_ENABLE_RXSM_ID     EPS_BATTERIES_ENABLE_CAN_ID
