@@ -992,7 +992,9 @@ void StartSystemOrchestrator(void *argument)
   // Wait until the SD card is initialised and ready
   osThreadFlagsWait(SD_CARD_INIT_FLAG, osFlagsWaitAny, osWaitForever);
 
-  // Allow the system to be put in test mode (no RXSM signals or IFS actuators) with a 30 second time-out
+  // Allow the system to be put in test mode (no RXSM signals or IFS actuators) with a 9 minute time-out
+  // This allows us to put the system into test or flight mode from T-10M (ALL EXPERIMENTS ON) to T-1M.
+  // At T-45s (ALL STATIONS GREEN), we are required to give green light for launch, so we must have selected a mode by then.
   osThreadFlagsWait(SYSTEM_MODE_SELECTED_FLAG, osFlagsWaitAny, MODE_SELECTION_TIMEOUT_MS);
 
   // In case mission mode is not set, default to flight mode

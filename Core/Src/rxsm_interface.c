@@ -105,6 +105,7 @@ static void HandleCsSpiDisable(const RXSM_Telecommand_t *tc);
 
 static void HandleSetTestMode(const RXSM_Telecommand_t *tc);
 static void HandleSetFlightMode(const RXSM_Telecommand_t *tc);
+static void HandleGetMode(const RXSM_Telecommand_t *tc);
 static void HandleSimulateLO(const RXSM_Telecommand_t *tc);
 static void HandleSimulateSODS(const RXSM_Telecommand_t *tc);
 static void HandleSimulateSOE(const RXSM_Telecommand_t *tc);
@@ -149,6 +150,7 @@ static const RXSMDispatchEntry_t dispatch_table[] =
 
     {SYSTEM_SET_TEST_MODE_RXSM_ID,    HandleSetTestMode},
     {SYSTEM_SET_FLIGHT_MODE_RXSM_ID,  HandleSetFlightMode},
+    {SYSTEM_GET_MODE_RXSM_ID,         HandleGetMode},
     {SIMULATE_LO_RXSM_ID,             HandleSimulateLO},
     {SIMULATE_SODS_RXSM_ID,           HandleSimulateSODS},
     {SIMULATE_SOE_RXSM_ID,            HandleSimulateSOE},
@@ -390,6 +392,12 @@ static void HandleSetFlightMode(const RXSM_Telecommand_t *tc){
     } else {
         RXSM_SendMessage(SYSTEM_SET_FLIGHT_MODE_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
     }
+}
+
+static void HandleGetMode(const RXSM_Telecommand_t *tc){
+    (void)tc;
+
+    RXSM_SendMessage(SYSTEM_GET_MODE_RXSM_ID, (uint8_t[]){mission_mode}, 1);
 }
 
 static void HandleSimulateLO(const RXSM_Telecommand_t *tc)
