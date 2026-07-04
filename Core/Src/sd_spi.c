@@ -192,12 +192,12 @@ uint8_t sd_send_cmd(const uint8_t *cmd, uint8_t *resp, uint8_t resp_len){
 
   // Wait for R1 response
   uint8_t r1 = 0xFF;
-  int retries = 100;
+  uint32_t start = osKernelGetTickCount();
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &r1, 1, HAL_MAX_DELAY);
-  } while (r1 == 0xFF && --retries > 0);
+  } while (r1 == 0xFF && (osKernelGetTickCount() - start) < SD_WRITE_TIMEOUT_MS);
 
-  if (retries == 0) { sd_deselect(); return 0xFF; } // timeout error
+  if (r1 == 0xFF) { sd_deselect(); return 0xFF; } // timeout error
 
   resp[0] = r1;
 
@@ -248,12 +248,12 @@ int transmit_data_packet(uint8_t *data_token, uint8_t *data, uint8_t *crc){
 
   // Wait busy
   uint8_t busy;
-  int retries = 100;
+  uint32_t start = osKernelGetTickCount();
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &busy, 1, HAL_MAX_DELAY);
-  } while (busy == 0x00 && --retries > 0);
+  } while (busy == 0x00 && (osKernelGetTickCount() - start) < SD_WRITE_TIMEOUT_MS);
 
-  if (retries == 0) { return -1; } // Timeout error
+  if (busy == 0x00) { return -1; } // Timeout error
 
   return 0; // Data Packet transmission successful
 }
@@ -261,13 +261,13 @@ int transmit_data_packet(uint8_t *data_token, uint8_t *data, uint8_t *crc){
 int read_data_packet(uint8_t *buffer){
   // Detect valid data token
   uint8_t data_token = 0xFF;
-  int retries = 100;
+  int32_t start = osKernelGetTickCount();
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &data_token, 1, HAL_MAX_DELAY);
       if (data_token != 0xFF && data_token != 0xFE) {
         return -1; // Error token received (0x01–0x1F range)
       }
-  } while (data_token == 0xFF && --retries > 0); 
+  } while (data_token == 0xFF && (osKernelGetTickCount() - start) < SD_WRITE_TIMEOUT_MS);
 
   if (data_token != 0xFE) { return -1; } // Timeout or wrong token
 
@@ -438,10 +438,12 @@ int sd_write_multiple_block(uint32_t start_block_addr, uint8_t *data, uint8_t nu
   
   // Wait busy
   uint8_t busy;
-  int retries = 100;
+  uint32_t start = osKernelGetTickCount();
   do {
       HAL_SPI_TransmitReceive(&hspi1, &high_byte, &busy, 1, HAL_MAX_DELAY);
-  } while (busy != 0xFF && --retries > 0);
+  } while (busy == 0x00 && (osKernelGetTickCount() - start) < SD_WRITE_TIMEOUT_MS);
+
+  if (busy == 0x00) {sd_deselect(); return -1; } // Timeout error
 
   // Release CS
   sd_deselect();

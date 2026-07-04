@@ -277,19 +277,19 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of SD_CardQueue */
-  SD_CardQueueHandle = osMessageQueueNew (64, sizeof(data_packet_t), &SD_CardQueue_attributes);
+  SD_CardQueueHandle = osMessageQueueNew (128, sizeof(data_packet_t), &SD_CardQueue_attributes);
 
   /* creation of IridiumQueue */
   IridiumQueueHandle = osMessageQueueNew (16, sizeof(data_packet_t), &IridiumQueue_attributes);
 
   /* creation of SensorDataQueue */
-  SensorDataQueueHandle = osMessageQueueNew (64, sizeof(can_rx_msg_t), &SensorDataQueue_attributes);
+  SensorDataQueueHandle = osMessageQueueNew (128, sizeof(can_rx_msg_t), &SensorDataQueue_attributes);
 
   /* creation of TelecommandQueue */
   TelecommandQueueHandle = osMessageQueueNew (16, sizeof(can_rx_msg_t), &TelecommandQueue_attributes);
 
   /* creation of MissionPhaseDataQueue */
-  MissionPhaseDataQueueHandle = osMessageQueueNew (16, sizeof(can_rx_msg_t), &MissionPhaseDataQueue_attributes);
+  MissionPhaseDataQueueHandle = osMessageQueueNew (32, sizeof(can_rx_msg_t), &MissionPhaseDataQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -995,7 +995,8 @@ void StartSystemOrchestrator(void *argument)
   // Allow the system to be put in test mode (no RXSM signals or IFS actuators) with a 9 minute time-out
   // This allows us to put the system into test or flight mode from T-10M (ALL EXPERIMENTS ON) to T-1M.
   // At T-45s (ALL STATIONS GREEN), we are required to give green light for launch, so we must have selected a mode by then.
-  osThreadFlagsWait(SYSTEM_MODE_SELECTED_FLAG, osFlagsWaitAny, MODE_SELECTION_TIMEOUT_MS);
+  // osThreadFlagsWait(SYSTEM_MODE_SELECTED_FLAG, osFlagsWaitAny, MODE_SELECTION_TIMEOUT_MS); TODO: uncomment
+  mission_mode = MISSION_MODE_TEST; // TODO: remove
 
   // In case mission mode is not set, default to flight mode
   if (mission_mode == MISSION_MODE_UNKNOWN)

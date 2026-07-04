@@ -32,6 +32,7 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 #define SD_BLOCK_SIZE 512
+#define SD_WRITE_TIMEOUT_MS 250
 
 /* Exported functions prototypes ---------------------------------------------*/
 
