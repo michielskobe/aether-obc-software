@@ -55,7 +55,7 @@
 #define SD_STARTUP_RETRY_LIMIT            5
 #define SD_METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
 #define ANTENNA_DEPLOY_TIMEOUT_MS 25000 // 25 second time-out to allow antenna deployment before issuing fTPS deployment
-#define MODE_SELECTION_TIMEOUT_MS 30000 // 30 second time-out interval to allow the system to be put into test mode
+#define MODE_SELECTION_TIMEOUT_MS 540000 // 9 minute time-out interval to allow the system to be put into test mode
 
 #define MANIFOLD_PRESSURE_THRESHOLD 0 /* TODO: define */
 #define ALTIMETER_PRESSURE_THRESHOLD 0 /* TODO: define */
