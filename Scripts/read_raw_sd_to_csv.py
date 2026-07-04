@@ -191,57 +191,198 @@ def decode_packet(entry_bytes: bytes) -> dict | None:
         raw_lat = (data[0] << 16) | (data[1] << 8) | data[2]
         return {
             "timestamp":     timestamp,
-            "type":          "latitude",
+            "type":          "GNSS_LATITUDE",
             "latitude_deg":  (raw_lat * (180.0 / 16777216.0)) - 90.0,
             "fix_quality":   data[3],
-            "longitude_deg": None,
-            "altitude_m":    None,
-            "satellites":    None,
-            "hdop":          None,
-            "id":            None,
-            "raw":           None,
         }
  
     elif packet_id == 1:  # longitude
         raw_lon = (data[0] << 16) | (data[1] << 8) | data[2]
         return {
             "timestamp":     timestamp,
-            "type":          "longitude",
-            "latitude_deg":  None,
+            "type":          "GNSS_LONGITUDE",
             "longitude_deg": (raw_lon * (360.0 / 16777216.0)) - 180.0,
-            "altitude_m":    None,
-            "fix_quality":   None,
             "satellites":    data[3],
-            "hdop":          None,
-            "id":            None,
-            "raw":           None,
         }
  
     elif packet_id == 2:  # altitude
         raw_alt = (data[0] << 8) | data[1]
         return {
             "timestamp":     timestamp,
-            "type":          "altitude",
-            "latitude_deg":  None,
-            "longitude_deg": None,
+            "type":          "GNSS_ALTITUDE",
             "altitude_m":    raw_alt * 1.5,
-            "fix_quality":   None,
-            "satellites":    None,
             "hdop":          data[2] / 10.0,
-            "id":            None,
-            "raw":           None,
         }
- 
+    elif packet_id == 4:  # EPS_BATTERY
+        return {
+            "timestamp": timestamp,
+            "type": "EPS_BATTERY",
+            "current_mA": int.from_bytes(data[0:2], "big"),
+            "voltage_mV": int.from_bytes(data[2:4], "big"),
+        }
+
+    elif packet_id == 5:  # CS_STATUS Part 1
+        return {
+            "timestamp": timestamp,
+            "type": "CS_STATUS",
+            "CPU_Usage": data[0],
+            "CPU_Temp": data[1],
+            "RAM_Usage": data[2],
+            "eMMC_Usage": data[3],
+        }
+    
+    elif packet_id == 6: ## CS_STATUS Part 2
+        return {
+            "timestamp": timestamp,
+            "type": "CS_STATUS",
+            "SD_Usage": data[0],
+            "Cam1_RTP": data[1],
+            "Cam2_RTP": data[2],
+            "CAN_Status": (data[3] >> 4) & 0x01,
+            "SPI_MUX_Status": (data[3] >> 3) & 0x01,
+            "SD_Status": (data[3] >> 2) & 0x01,
+            "Cam2_Status": (data[3] >> 1) & 0x01,
+            "Cam1_Status": data[3] & 0x01,
+        }
+
+    elif packet_id == 7:  # IFS_ALTIMETER Part 1
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_ALTIMETER",
+            "pressure_mbar": int.from_bytes(data, "big", signed=True) * 100,
+        }
+    
+    elif packet_id == 8:  # IFS_ALTIMETER Part 2
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_ALTIMETER",
+            "temperature_C": int.from_bytes(data, "big", signed=True) * 100,
+        }
+
+    elif packet_id == 9:  # IFS_TCOUPLE Part 1
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_TCOUPLE",
+            "T1": int.from_bytes(data[0:2], "big", signed=True) * 0.25,
+            "T2": int.from_bytes(data[2:4], "big", signed=True) * 0.25,
+        }
+    
+    elif packet_id == 10:  # IFS_TCOUPLE Part 2
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_TCOUPLE",
+            "T3": int.from_bytes(data[0:2], "big", signed=True) * 0.25,
+            "T4": int.from_bytes(data[2:4], "big", signed=True) * 0.25,
+        }
+
+    elif packet_id == 17:  # IFS_TCOUPLE_INTERN Part 1
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_TCOUPLE_INTERN",
+            "T1": int.from_bytes(data[0:2], "big", signed=True) * 0.0625,
+            "T2": int.from_bytes(data[2:4], "big", signed=True) * 0.0625,
+        }
+    
+    elif packet_id == 18:  # IFS_TCOUPLE_INTERN Part 2
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_TCOUPLE_INTERN",
+            "T3": int.from_bytes(data[0:2], "big", signed=True) * 0.0625,
+            "T4": int.from_bytes(data[2:4], "big", signed=True) * 0.0625,
+        }
+    
+    elif packet_id == 19:  # IFS_TCOUPLE_ERROR
+        b0 = data[0]
+        b1 = data[1]
+
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_TCOUPLE_ERROR",
+
+            "TC1_OC_fault":   b0 & 0x01,
+            "TC1_SCG_fault":  (b0 >> 1) & 0x01,
+            "TC1_SCV_fault":  (b0 >> 2) & 0x01,
+            "TC2_OC_fault":   (b0 >> 3) & 0x01,
+            "TC2_SCG_fault":  (b0 >> 4) & 0x01,
+            "TC2_SCV_fault":  (b0 >> 5) & 0x01,
+
+            "TC3_OC_fault":   b1 & 0x01,
+            "TC3_SCG_fault":  (b1 >> 1) & 0x01,
+            "TC3_SCV_fault":  (b1 >> 2) & 0x01,
+            "TC4_OC_fault":   (b1 >> 3) & 0x01,
+            "TC4_SCG_fault":  (b1 >> 4) & 0x01,
+            "TC4_SCV_fault":  (b1 >> 5) & 0x01,
+        }
+    
+    elif packet_id == 20:  # IFS_STAGNATION
+        temp = int.from_bytes(data[0:2], "big", signed=True)
+        press = int.from_bytes(data[2:4], "big", signed=True)
+
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_STAGNATION",
+            "temperature_raw": temp,
+            "pressure_raw": press,
+        }
+
+    elif packet_id == 21:  # IFS_BW_CURRENTS
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_BW_CURRENTS",
+            "INA1": int.from_bytes(data[0:2], "big"),
+            "INA2": int.from_bytes(data[2:4], "big"),
+        }
+
+    elif packet_id == 22:  # IFS_CGG_CURRENTS
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_CGG_CURRENTS",
+            "INA1": int.from_bytes(data[0:2], "big"),
+            "INA2": int.from_bytes(data[2:4], "big"),
+        }
+
+    elif packet_id == 23:  # IFS_MANIFOLD
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_MANIFOLD",
+            "pressure": int.from_bytes(data[0:2], "big"),
+        }
+
+    elif packet_id == 24:  # IFS_ACCELERATION Part 1
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_ACCELERATION",
+            "Z": int.from_bytes(data[0:2], "big", signed=True),
+            "Y": int.from_bytes(data[2:4], "big", signed=True),
+        }
+    
+    elif packet_id == 25:  # IFS_ACCELERATION Part 2
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_ACCELERATION",
+            "X": int.from_bytes(data[0:2], "big", signed=True),
+            "acceleration_temp": int.from_bytes(data[2:4], "big", signed=True),
+        }
+
+    elif packet_id == 32:  # IFS_ROTATION Part 1
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_ROTATION",
+            "yaw": int.from_bytes(data[0:2], "big", signed=True),
+            "roll": int.from_bytes(data[2:4], "big", signed=True),
+        } 
+    
+    elif packet_id == 33:  # IFS_ROTATION Part 2
+        return {
+            "timestamp": timestamp,
+            "type": "IFS_ROTATION",
+            "pitch": int.from_bytes(data[0:2], "big", signed=True),
+        } 
+    
     else:  # unknown packet type
         return {
             "timestamp":     timestamp,
             "type":          "unknown",
-            "latitude_deg":  None,
-            "longitude_deg": None,
-            "altitude_m":    None,
-            "fix_quality":   None,
-            "satellites":    None,
-            "hdop":          None,
             "id":            packet_id,
             "raw":           data.hex(),
         }
@@ -309,12 +450,80 @@ def read_sd_raw(device_path: str, start_block: int = DATA_START, end_block: int 
 CSV_FIELDS = [
     "timestamp",
     "type",
+
+    # GNSS
     "latitude_deg",
     "longitude_deg",
     "altitude_m",
     "fix_quality",
     "satellites",
     "hdop",
+
+    # EPS battery (0x504)
+    "current_mA",
+    "voltage_mV",
+
+    # CS status (0x505)
+    "CPU_Usage",
+    "CPU_Temp",
+    "RAM_Usage",
+    "eMMC_Usage",
+    "SD_Usage",
+    "Cam1_RTP",
+    "Cam2_RTP",
+    "CAN_Status",
+    "SPI_MUX_Status",
+    "SD_Status",
+    "Cam2_Status",
+    "Cam1_Status",
+
+    # Altimeter (0x507)
+    "pressure_mbar",
+    "temperature_C",
+
+    # Thermocouples (0x509 / 0x511)
+    "T1",
+    "T2",
+    "T3",
+    "T4",
+
+    # Thermocouple error (0x513)
+    "TC1_OC_fault",
+    "TC1_SCG_fault",
+    "TC1_SCV_fault",
+    "TC2_OC_fault",
+    "TC2_SCG_fault",
+    "TC2_SCV_fault",
+    "TC3_OC_fault",
+    "TC3_SCG_fault",
+    "TC3_SCV_fault",
+    "TC4_OC_fault",
+    "TC4_SCG_fault",
+    "TC4_SCV_fault",
+
+    # Stagnation (0x514)
+    "temperature_raw",
+    "pressure_raw",
+
+    # Currents (0x515 / 0x516)
+    "INA1",
+    "INA2",
+
+    # Manifold (0x517)
+    "pressure",
+
+    # Acceleration (0x518)
+    "Z",
+    "Y",
+    "X",
+    "acceleration_temp",
+
+    # Rotation (0x520)
+    "yaw",
+    "roll",
+    "pitch",
+
+    # Generic / fallback
     "id",
     "raw",
 ]
