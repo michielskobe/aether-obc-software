@@ -85,10 +85,10 @@ if __name__ == "__main__":
     EPS_RAIL_DISABLE    = 0x106
     OBC_TEST_MODE       = 0x800
     OBC_FLIGHT_MODE     = 0x801
-    SIMULATE_LO         = 0x802
-    SIMULATE_SODS       = 0x803
-    SIMULATE_SOE        = 0x804
-    SIMULATE_EJECTION   = 0x805
+    SIMULATE_LO         = 0x803
+    SIMULATE_SODS       = 0x804
+    SIMULATE_SOE        = 0x805
+    SIMULATE_EJECTION   = 0x806
 
     PORT = "/dev/ttyUSB0"      # or "/dev/ttyUSB0"
     BAUD = 38400

@@ -38,7 +38,6 @@ extern "C" {
 /* USER CODE BEGIN ET */
 typedef enum
 {
-  MISSION_MODE_UNKNOWN = 0,
   MISSION_MODE_TEST,
   MISSION_MODE_FLIGHT
 } mission_mode_t;

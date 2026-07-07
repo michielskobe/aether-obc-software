@@ -31,12 +31,10 @@
 #include "command_interface.h"
 #include "data_acquisition.h"
 #include "data_packet.h"
-#include "mosaic_x5.h"
-#include "sd_spi.h"
 #include "iridium.h"
+#include "mosaic_x5.h"
 #include "rxsm_interface.h"
-#include "stm32l4xx_hal_cortex.h"
-#include "stm32l4xx_hal_gpio.h"
+#include "sd_spi.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,18 +49,17 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define SD_INIT_RETRIES_PER_POWER_CYCLE   3
-#define SD_STARTUP_RETRY_LIMIT            5
-#define SD_METADATA_UPDATE_INTERVAL 16 // Update metadata every 16 sector writes (every 8 kB)
-#define ANTENNA_DEPLOY_TIMEOUT_MS 25000 // 25 second time-out to allow antenna deployment before issuing fTPS deployment
-#define MODE_SELECTION_TIMEOUT_MS 540000 // 9 minute time-out interval to allow the system to be put into test mode
+#define SD_INIT_RETRIES_PER_POWER_CYCLE 3       // Number of allowed failed sd_init()-executions before power cycling
+#define SD_STARTUP_RETRY_LIMIT          5       // Number of allowed failed retry sequences before continuing without SD Card
+#define SD_METADATA_UPDATE_INTERVAL     16      // Update metadata every 16 sector writes (every 8 kB)
+#define ANTENNA_DEPLOY_TIMEOUT_MS       25000   // 25 second time-out to allow antenna deployment before issuing fTPS deployment
+#define MODE_SELECTION_TIMEOUT_MS       540000  // 9 minute time-out interval to allow the system to be put into test mode
 
-#define MANIFOLD_PRESSURE_THRESHOLD 0 /* TODO: define */
-#define ALTIMETER_PRESSURE_THRESHOLD 0 /* TODO: define */
-#define ALTITUDE_THRESHOLD 0 /* TODO: define */
-#define LANDED_ALTITUDE_THRESHOLD 0 /* TODO: define */
-#define LANDED_ACCEL_THRESHOLD 0 /* TODO: define */
-
+#define MANIFOLD_PRESSURE_THRESHOLD     0       /* TODO: define */
+#define ALTIMETER_PRESSURE_THRESHOLD    0       /* TODO: define */
+#define ALTITUDE_THRESHOLD              0       /* TODO: define */
+#define LANDED_ALTITUDE_THRESHOLD       0       /* TODO: define */
+#define LANDED_ACCEL_THRESHOLD          0       /* TODO: define */
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -157,21 +154,20 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
 };
 /* USER CODE BEGIN PV */
 /* General PV */
-volatile mission_mode_t mission_mode = MISSION_MODE_UNKNOWN;
+volatile mission_mode_t mission_mode = MISSION_MODE_FLIGHT; // Put the system automatically in flight mode, this can be changed to test mode while waiting for the RXSM signals
 
 /* Iridium PV */
-osTimerId_t iridium_off_timer;
-static osTimerId_t iridium_tx_timer;
-
-static IridiumCtx_t s_iridium; // Iridium driver context
+static osTimerId_t iridium_off_timer; // Timer intended to shut off Iridium after landing
+static osTimerId_t iridium_tx_timer;  // Timer intended to schedule Iridium transmissions
+static IridiumCtx_t s_iridium;        // Iridium FSM driver context
 
 /* SD Card PV */
-static uint8_t sd_block[SD_BLOCK_SIZE];
-static uint16_t block_index = 0;
-static uint32_t sd_write_block_addr = 3; // Start writing after the reserved blocks (0-2) on the SD card
+static uint8_t sd_block[SD_BLOCK_SIZE];   // Buffer to store SD write content
+static uint16_t block_index = 0;          // Value of current sd_block index
+static uint32_t sd_write_block_addr = 3;  // Start writing after the reserved blocks (0-2) on the SD card
 metadata_t mission_metadata = {0};
 
-osMutexId_t sd_mutex_id;  
+osMutexId_t sd_mutex_id;                  // Mutex to protect SD write and read operations
  
 const osMutexAttr_t SD_Card_Mutex_attr = {
   "SD_CardMutex",                            // human readable mutex name
@@ -181,7 +177,7 @@ const osMutexAttr_t SD_Card_Mutex_attr = {
 };
 
 /* RMU PV */
-static uint8_t rxsm_rx_byte;
+static uint8_t rxsm_rx_byte;                      // Variable to store RXSM UART IT RX byte
 
 /* USER CODE END PV */
 
@@ -809,25 +805,27 @@ static void MX_GPIO_Init(void)
  */
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-  // Read the CAN message from the hardware FIFO and put it into the SensorsQueue for processing by the Data Acquisition Task, 
-  // or into the TelecommandQueue for processing by the Command Interface Task, depending on the message ID
+  /* Read the CAN message from the hardware FIFO and put it into the SensorsQueue for processing by the Data Acquisition Task, 
+   * and potentially also into the MissionPhaseDataQueue for processing by the System Orchestrator Task,
+   * or into the TelecommandQueue for processing by the Command Interface Task, depending on the message ID. */
   can_rx_msg_t msg;
 
+  // Empty FIFO 0 and handle its contents based on ID
   while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0)
   {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &msg.RxHeader, msg.RxData) != HAL_OK)
     {
-      break;
+      break; // Break if no more messages are pressent in FIFO 0.
     }
 
     uint16_t id = msg.RxHeader.StdId;
 
-    // 0x0**
+    // 0x0** (Telecommand)
     if ((id & 0x700) == 0x000)
     {
       osMessageQueuePut(TelecommandQueueHandle, &msg, 0, 0);
     }
-    // 0x5**
+    // 0x5** (Sensor data)
     else if ((id & 0x700) == 0x500)
     {
       osMessageQueuePut(SensorDataQueueHandle, &msg, 0, 0);
@@ -842,6 +840,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 /**
  * @brief  Called by HAL when a DMA TX transfer completes on any UART.
  *         Forward to the Iridium driver when it is UART4.
+ * @param  huart: pointer to a UART_HandleTypeDef structure that contains
+ *                the configuration information for the specified UART.
+ * @retval None
  */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -887,6 +888,12 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     }
 }
 
+/**
+ * @brief  This function handles UART receive complete callback for LPUART1.
+ * @param  huart: pointer to a UART_HandleTypeDef structure that contains
+ *                the configuration information for the specified UART.
+ * @retval None
+ */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart == &hlpuart1)
@@ -906,50 +913,65 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   switch (GPIO_Pin)
   {
-    case RXSM_LO_Pin:
+    case RXSM_LO_Pin: // LO signal from RXSM
+      // Check the state of the LO pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(RXSM_LO_GPIO_Port, RXSM_LO_Pin) == GPIO_PIN_RESET)
         osThreadFlagsSet(SysOrchestratorHandle, LO_VALID_EDGE_FLAG);
       else
         osThreadFlagsSet(SysOrchestratorHandle, LO_INVALID_EDGE_FLAG);
       break;
-    case RXSM_SODS_Pin:
+    case RXSM_SODS_Pin: // SODS signal from RXSM
+      // Check the state of the SODS pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(RXSM_SODS_GPIO_Port, RXSM_SODS_Pin) == GPIO_PIN_RESET)
         osThreadFlagsSet(SysOrchestratorHandle, SODS_VALID_EDGE_FLAG);
       else
         osThreadFlagsSet(SysOrchestratorHandle, SODS_INVALID_EDGE_FLAG);
       break;
-    case RXSM_SOE_Pin:
+    case RXSM_SOE_Pin: // SOE signal from RXSM
+      // Check the state of the SOE pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(RXSM_SOE_GPIO_Port, RXSM_SOE_Pin) == GPIO_PIN_RESET)
         osThreadFlagsSet(SysOrchestratorHandle, SOE_VALID_EDGE_FLAG);
       else
         osThreadFlagsSet(SysOrchestratorHandle, SOE_INVALID_EDGE_FLAG);
       break;
-    case FFU_EJECT_DETECT_Pin:
+    case FFU_EJECT_DETECT_Pin: // Ejection detection signal from FFU
+      // Check the state of the FFU_EJECT_DETECT pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(FFU_EJECT_DETECT_GPIO_Port, FFU_EJECT_DETECT_Pin) == GPIO_PIN_SET)
         osThreadFlagsSet(SysOrchestratorHandle, EJECTION_VALID_EDGE_FLAG);
       else
         osThreadFlagsSet(SysOrchestratorHandle, EJECTION_INVALID_EDGE_FLAG);
       break;
-    case PGOOD_Pin:
+    case PGOOD_Pin: // PGOOD signal from Iridium modem
+      // Unused in current configuration, disable interrupt since it otherwise triggers very often due to supercap charging
       HAL_NVIC_DisableIRQ(PGOOD_EXTI_IRQn);
       break;
-    case NA_Pin:
-      break;
-    case RI_Pin:
-      break;
+    case NA_Pin: // NA signal from Iridium modem
+      break; // Unused in current configuration 
+    case RI_Pin: // RI signal from Iridium modem
+      break; // Unused in current configuration 
     default:
       break;
   }
 }
 
+/**
+ * @brief  Timer that disables Iridium and GNSS after expiring.
+ * @param  argument: Not used
+ * @retval None
+ */
 static void Iridium_OffTimer_Callback (void *argument) {
-  // Disable Iridium when timer has triggered
+  // Disable Iridium by cutting Iridium 5V power rail
   send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);  
+
+  // Disable mosaic-x5 by pulling P-MOSFET gate high
+  HAL_GPIO_WritePin(GNSS_CB_SHDN_GPIO_Port, GNSS_CB_SHDN_Pin, GPIO_PIN_SET);
 }
 
 /**
- * @brief  Periodic 15 s timer callback.
- *         Only posts the thread flag — never touches UART or the session SM.
+ * @brief  Periodic 15 s timer callback to trigger Iridium transmission.
+ *         Only posts the thread flag and never touches UART or the session SM.
+ * @param  argument: Not used
+ * @retval None
  */
 static void Iridium_TxTimer_Callback(void *argument)
 {
@@ -957,20 +979,31 @@ static void Iridium_TxTimer_Callback(void *argument)
     osThreadFlagsSet(IridiumManagerHandle, IRIDIUM_TX_FLAG);
 }
 
+/**
+ * @brief  Waits for a validated RXSM or ejection signal by checking for a valid edge,
+ *         followed by a 1-second wait without an invalid edge to avoid faulty detection
+ *         due to vibrations and temporary pogo pin disconnection.
+ * @param  valid_flag: The thread flag indicating a valid edge has been detected.
+ * @param  invalid_flag: The thread flag indicating an invalid edge has been detected.
+ * @retval None
+ */
 static inline void wait_for_validated_signal(uint32_t valid_flag, uint32_t invalid_flag)
 {
     for (;;)
     {
-        // Wait for the good edge first
-        osThreadFlagsWait(valid_flag, osFlagsWaitAny, osWaitForever);
+      // Wait for the good edge
+      uint32_t result = osThreadFlagsWait(valid_flag, osFlagsWaitAny, osWaitForever);
 
-        // Now wait 1 second, but bail out immediately if the bad edge arrives
-        uint32_t result = osThreadFlagsWait(invalid_flag, osFlagsWaitAny, pdMS_TO_TICKS(1000));
+      if (result & osFlagsError)
+        continue; // Spurious error, just retry
 
-        if (result == osFlagsErrorTimeout)
-            return; // Stayed in valid state for the full second → event confirmed
-        
-        // Bad edge arrived within the second → was a glitch, loop and try again
+      // Now wait 1 second, but bail out immediately if the bad edge arrives
+      result = osThreadFlagsWait(invalid_flag, osFlagsWaitAny, pdMS_TO_TICKS(1000));
+
+      if (result == osFlagsErrorTimeout)
+        return; // Stayed in valid state for the full second → event confirmed
+
+      // Otherwise: Bad edge arrived within the second → glitch, loop and try again
     }
 }
 
@@ -990,32 +1023,23 @@ void StartSystemOrchestrator(void *argument)
   osThreadFlagsSet(RMUManagerHandle, RMU_STARTUP_FLAG);
 
   // Wait until the SD card is initialised and ready
+  // If the SD card fails to initialise, the System Orchestrator task continues while the SD Card Manager Task keeps trying to initialise.
   osThreadFlagsWait(SD_CARD_INIT_FLAG, osFlagsWaitAny, osWaitForever);
-
-  // Allow the system to be put in test mode (no RXSM signals or IFS actuators) with a 9 minute time-out
-  // This allows us to put the system into test or flight mode from T-10M (ALL EXPERIMENTS ON) to T-1M.
-  // At T-45s (ALL STATIONS GREEN), we are required to give green light for launch, so we must have selected a mode by then.
-  // osThreadFlagsWait(SYSTEM_MODE_SELECTED_FLAG, osFlagsWaitAny, MODE_SELECTION_TIMEOUT_MS); TODO: uncomment
-  mission_mode = MISSION_MODE_TEST; // TODO: remove
-
-  // In case mission mode is not set, default to flight mode
-  if (mission_mode == MISSION_MODE_UNKNOWN)
-  {
-    mission_mode = MISSION_MODE_FLIGHT;
-  }
  
   // Read the mission metadata from the SD card and store it in the global mission_metadata struct
+  osMutexAcquire(sd_mutex_id, osWaitForever); 
   metadata_read(&mission_metadata);
   if (mission_metadata.last_written_sector < 3){
     mission_metadata.last_written_sector = 4; // Ensure that the last written sector is not in the reserved area of the SD card
   } else if (mission_metadata.last_written_sector > 3){
     sd_write_block_addr = mission_metadata.last_written_sector ++; // Set the current block address to the next block after the last written sector
   }
+  osMutexRelease(sd_mutex_id); 
 
   // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
-  // Only wait if in flight mode AND LO has NOT already been triggered AND ejection has NOT already happened
+  // Only wait if LO has NOT already been triggered AND ejection has NOT already happened
   // If LO has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.rxsm_lo != 0xFF && mission_metadata.ffu_ejection != 0xFF){
+  if (mission_metadata.rxsm_lo != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG);
     // Set the rxsm_lo field in the mission metadata to 0xFF to indicate that LO has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_lo = 0xFF;
@@ -1025,12 +1049,12 @@ void StartSystemOrchestrator(void *argument)
   }
 
   // Instruct EPS to switch to internal power in case this has not happened yet through RXSM uplink
-  send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); 
+  send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); // TODO: Check with Daniel if this is allowed, otherwise just remove
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
-  // Only wait if in flight mode AND SODS has NOT already been triggered AND ejection has NOT already happened
+  // Only wait if SODS has NOT already been triggered AND ejection has NOT already happened
   // If SODS has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.rxsm_sods != 0xFF && mission_metadata.ffu_ejection != 0xFF){
+  if (mission_metadata.rxsm_sods != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG);
     // Set the rxsm_sods field in the mission metadata to 0xFF to indicate that SODS has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_sods = 0xFF;
@@ -1039,6 +1063,12 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id);
   }
 
+  // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
+  osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
+
+  // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
+  osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
+
   // Signal the RMUManager to turn on the RMU camera by setting the RMU_CAMERA_TRIGGER_FLAG
   osThreadFlagsSet(RMUManagerHandle, RMU_CAMERA_TRIGGER_FLAG);
 
@@ -1046,9 +1076,9 @@ void StartSystemOrchestrator(void *argument)
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
 
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
-  // Only wait if in flight mode AND SOE has NOT already been triggered AND ejection has NOT already happened
+  // Only wait if SOE has NOT already been triggered AND ejection has NOT already happened
   // If SOE has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF){
+  if (mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG);
     // Set the rxsm_soe field in the mission metadata to 0xFF to indicate that SOE has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.rxsm_soe = 0xFF;
@@ -1064,12 +1094,9 @@ void StartSystemOrchestrator(void *argument)
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
 
-  // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
-  osThreadFlagsSet(SDCardManagerHandle, SD_CARD_STARTUP_FLAG);
-
   // Wait for the ejection signal before proceeding with the rest of the system startup sequence
-  // Only wait if in flight mode, if ejection has already been triggered, then skip waiting and proceed immediately
-  if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.ffu_ejection != 0xFF){
+  // If ejection has already been triggered, then skip waiting and proceed immediately
+  if (mission_metadata.ffu_ejection != 0xFF){
     wait_for_validated_signal(EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG);
     // Set the ffu_ejection field in the mission metadata to 0xFF to indicate that ejection has occurred, and write the updated mission metadata back to the SD card
     mission_metadata.ffu_ejection = 0xFF;
@@ -1101,8 +1128,7 @@ void StartSystemOrchestrator(void *argument)
     send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
   }
 
-  // Signal the DataAcquisition task to start up by setting the DATA_ACQ_STARTUP_FLAG
-  osThreadFlagsSet(DataAcquisitionHandle, DATA_ACQ_STARTUP_FLAG);
+  // Signal the IridiumManager task to start up by setting the IRIDIUM_STARTUP_FLAG
   osThreadFlagsSet(IridiumManagerHandle, IRIDIUM_STARTUP_FLAG);
 
   can_rx_msg_t rx_msg;
@@ -1112,7 +1138,8 @@ void StartSystemOrchestrator(void *argument)
   float accel = MAXFLOAT;
 
   for (;;)
-  {    
+  {
+    // Get data message out of the MissionPhaseDataQueue, without blocking on it. 
     if (osMessageQueueGet(MissionPhaseDataQueueHandle, &rx_msg, NULL, 100U) == osOK) {
       switch (rx_msg.RxHeader.StdId)
       {
@@ -1145,6 +1172,8 @@ void StartSystemOrchestrator(void *argument)
           break;
       }
     }
+
+    // Execute OBC functionality based on mission phase data:
 
     // 1. Manifold pressure drop → fire CGG2 (ONLY IN FLIGHT MODE)
     if (mission_mode == MISSION_MODE_FLIGHT && !mission_metadata.cgg2_fired && manifold_pressure <= MANIFOLD_PRESSURE_THRESHOLD)
@@ -1196,7 +1225,7 @@ void StartSystemOrchestrator(void *argument)
 void StartRMUManager(void *argument)
 {
   /* USER CODE BEGIN StartRMUManager */
-  // Initialize RXSM variables
+  // Initialize RXSM parser variables
   RXSM_Init();
 
   // Wait for SystemOrchestrator to start up and set the RMU_STARTUP_FLAG before proceeding
@@ -1239,7 +1268,7 @@ void StartRMUManager(void *argument)
 
   // Broken out of main loop, initialise RMU Manager Task termination
 
-  // De-assert the camera trigger GPIO signal
+  // De-assert the camera trigger GPIO signal (Connection with RMU is lost so camera is powered independently from FFU)
   HAL_GPIO_WritePin(RMU_CAM_TRIG_GPIO_Port, RMU_CAM_TRIG_Pin, GPIO_PIN_RESET);
 
   // Stop LPUART1 RX
@@ -1379,7 +1408,7 @@ void StartSDCardManager(void *argument)
   data_packet_t entry;
   for(;;)
   {
-    // Wait for next sensor entry
+    // Wait for next data entry in the SD Card Queue
     osMessageQueueGet(SD_CardQueueHandle, &entry, NULL, osWaitForever);
 
     // Copy into block buffer
@@ -1433,8 +1462,8 @@ void StartIridiumManager(void *argument)
   // Initialise Iridium driver
   Iridium_Init(&s_iridium, &huart4);
 
-  // Start periodic TX timer (15 000 ms)
-  osTimerStart(iridium_tx_timer, 15000u);
+  // Start periodic TX timer (15 s)
+  osTimerStart(iridium_tx_timer, 15000);
 
   
   /* Infinite loop */
