@@ -101,3 +101,8 @@ if __name__ == "__main__":
     #send_command(PORT, BAUD, EPS_RAIL_DISABLE, payload=b"\x10")
 
     send_command(PORT, BAUD, OBC_TEST_MODE)
+
+    #send_command(PORT, BAUD, SIMULATE_LO)
+    #send_command(PORT, BAUD, SIMULATE_SODS)
+    #send_command(PORT, BAUD, SIMULATE_SOE)
+    #send_command(PORT, BAUD, SIMULATE_EJECTION)
