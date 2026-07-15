@@ -495,6 +495,7 @@ int metadata_write(metadata_t *metadata) {
     // Calculate CRC
     uint16_t crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)metadata, (sizeof(metadata_t) - sizeof(uint16_t)) / 4);
     metadata->crc = crc;
+    metadata->sequence++;
 
     uint8_t sector[SD_BLOCK_SIZE];
     memset(sector, 0x00, SD_BLOCK_SIZE);
