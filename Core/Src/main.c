@@ -52,7 +52,7 @@
 #define SD_INIT_RETRIES_PER_POWER_CYCLE 3       // Number of allowed failed sd_init()-executions before power cycling
 #define SD_STARTUP_RETRY_LIMIT          5       // Number of allowed failed retry sequences before continuing without SD Card
 #define SD_METADATA_UPDATE_INTERVAL     16      // Update metadata every 16 sector writes (every 8 kB)
-#define ANTENNA_DEPLOY_TIMEOUT_MS       25000   // 25 second time-out to allow antenna deployment before issuing fTPS deployment
+#define FTPS_DEPLOY_TIMEOUT_MS          10000   // 10 second time-out to allow antenna deployment before issuing fTPS deployment
 #define MODE_SELECTION_TIMEOUT_MS       540000  // 9 minute time-out interval to allow the system to be put into test mode
 
 #define MANIFOLD_PRESSURE_THRESHOLD     0       /* TODO: define */
@@ -1048,6 +1048,10 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
   }
 
+  // 30 second delay after LO so nothing is executed exactly at LO
+  osDelay(pdMS_TO_TICKS(30000));
+
+
   // Instruct EPS to switch to internal power in case this has not happened yet through RXSM uplink
   send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); // TODO: Check with Daniel if this is allowed, otherwise just remove
   
@@ -1105,6 +1109,9 @@ void StartSystemOrchestrator(void *argument)
     osMutexRelease(sd_mutex_id); 
   }
 
+  // 5 second delay after ejection so nothing is executed exactly at ejection
+  osDelay(pdMS_TO_TICKS(5000))
+
   // Signal the RMUManager to terminate itself by setting the RMU_SHUTDOWN_FLAG
   // Only do it in flight mode, so RXSM uplink can be used for testing purposes
   if (mission_mode == MISSION_MODE_FLIGHT){
@@ -1114,7 +1121,6 @@ void StartSystemOrchestrator(void *argument)
   // Instruct EPS to turn on Iridium 5V power rail
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
   
-
   // Instruct EPS to turn on IFS 5V power rail and start arming actuators (ONLY IN FLIGHT MODE)
   if (mission_mode == MISSION_MODE_FLIGHT){
     send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IFS_5V_RAIL_ID}, 1);
@@ -1122,7 +1128,7 @@ void StartSystemOrchestrator(void *argument)
     // Issue antenna burn-wire ARM signal
     send_can_command_tracked(IFS_ARM_BW1_CAN_ID, IFS_ARM_BW1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
 
-    osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, ANTENNA_DEPLOY_TIMEOUT_MS);
+    osThreadFlagsWait(ANTENNA_DEPLOYED_FLAG, osFlagsWaitAny, FTPS_DEPLOY_TIMEOUT_MS);
 
     // Issue CGG1 ARM signal
     send_can_command_tracked(IFS_ARM_CGG1_CAN_ID, IFS_ARM_CGG1_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
