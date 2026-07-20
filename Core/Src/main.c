@@ -40,6 +40,16 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+// Struct containing all information about a single System Orchestrator task signal (LO/SODS/SOE/FFU Ejection)
+typedef struct {
+    uint32_t       valid_flag;
+    uint32_t       invalid_flag;
+    GPIO_TypeDef  *port;
+    uint16_t       pin;
+    GPIO_PinState  active_state;
+    uint8_t       *metadata_field;
+} orchestrator_signal_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -155,6 +165,11 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
 /* USER CODE BEGIN PV */
 /* General PV */
 volatile mission_mode_t mission_mode = MISSION_MODE_FLIGHT; // Put the system automatically in flight mode, this can be changed to test mode while waiting for the RXSM signals
+metadata_t mission_metadata = {0}; // Struct to store mission metadata
+static const orchestrator_signal_t LO_SIGNAL   = {LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG, RXSM_LO_GPIO_Port, RXSM_LO_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_lo};
+static const orchestrator_signal_t SODS_SIGNAL = {SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG, RXSM_SODS_GPIO_Port, RXSM_SODS_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_sods };
+static const orchestrator_signal_t SOE_SIGNAL  = {SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG, RXSM_SOE_GPIO_Port, RXSM_SOE_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_soe };
+static const orchestrator_signal_t EJ_SIGNAL   = {EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG, FFU_EJECT_DETECT_GPIO_Port, FFU_EJECT_DETECT_Pin, GPIO_PIN_SET, &mission_metadata.ffu_ejection };
 
 /* Iridium PV */
 static osTimerId_t iridium_off_timer; // Timer intended to shut off Iridium after landing
@@ -165,7 +180,6 @@ static IridiumCtx_t s_iridium;        // Iridium FSM driver context
 static uint8_t sd_block[SD_BLOCK_SIZE];   // Buffer to store SD write content
 static uint16_t block_index = 0;          // Value of current sd_block index
 static uint32_t sd_write_block_addr = 3;  // Start writing after the reserved blocks (0-2) on the SD card
-metadata_t mission_metadata = {0};
 
 osMutexId_t sd_mutex_id;                  // Mutex to protect SD write and read operations
  
@@ -914,6 +928,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   switch (GPIO_Pin)
   {
     case RXSM_LO_Pin: // LO signal from RXSM
+      if (mission_metadata.ffu_ejection == 0xFF)
+        HAL_NVIC_DisableIRQ(RXSM_LO_EXTI_IRQn); // Pogo link is physically gone, pin is floating, disable interrupt
       // Check the state of the LO pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(RXSM_LO_GPIO_Port, RXSM_LO_Pin) == GPIO_PIN_RESET)
         osThreadFlagsSet(SysOrchestratorHandle, LO_VALID_EDGE_FLAG);
@@ -921,6 +937,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         osThreadFlagsSet(SysOrchestratorHandle, LO_INVALID_EDGE_FLAG);
       break;
     case RXSM_SODS_Pin: // SODS signal from RXSM
+      if (mission_metadata.ffu_ejection == 0xFF)
+        HAL_NVIC_DisableIRQ(RXSM_SODS_EXTI_IRQn); // Pogo link is physically gone, pin is floating, disable interrupt
       // Check the state of the SODS pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(RXSM_SODS_GPIO_Port, RXSM_SODS_Pin) == GPIO_PIN_RESET)
         osThreadFlagsSet(SysOrchestratorHandle, SODS_VALID_EDGE_FLAG);
@@ -928,6 +946,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         osThreadFlagsSet(SysOrchestratorHandle, SODS_INVALID_EDGE_FLAG);
       break;
     case RXSM_SOE_Pin: // SOE signal from RXSM
+      if (mission_metadata.ffu_ejection == 0xFF)
+        HAL_NVIC_DisableIRQ(RXSM_SOE_EXTI_IRQn); // Pogo link is physically gone, pin is floating, disable interrupt
       // Check the state of the SOE pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(RXSM_SOE_GPIO_Port, RXSM_SOE_Pin) == GPIO_PIN_RESET)
         osThreadFlagsSet(SysOrchestratorHandle, SOE_VALID_EDGE_FLAG);
@@ -946,8 +966,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
       HAL_NVIC_DisableIRQ(PGOOD_EXTI_IRQn);
       break;
     case NA_Pin: // NA signal from Iridium modem
+      // Unused in current configuration, disable interrupt
+      HAL_NVIC_DisableIRQ(NA_EXTI_IRQn);
       break; // Unused in current configuration 
     case RI_Pin: // RI signal from Iridium modem
+      // Unused in current configuration, disable interrupt
+      HAL_NVIC_DisableIRQ(RI_EXTI_IRQn);
       break; // Unused in current configuration 
     default:
       break;
@@ -980,32 +1004,102 @@ static void Iridium_TxTimer_Callback(void *argument)
 }
 
 /**
- * @brief  Waits for a validated RXSM or ejection signal by checking for a valid edge,
- *         followed by a 1-second wait without an invalid edge to avoid faulty detection
- *         due to vibrations and temporary pogo pin disconnection.
- * @param  valid_flag: The thread flag indicating a valid edge has been detected.
- * @param  invalid_flag: The thread flag indicating an invalid edge has been detected.
+ * @brief Sets the signal's valid flag if its GPIO is already in the active state.
+ *
+ * This handles events that occurred before the orchestrator started waiting,
+ * such as after a reboot. It converts the current GPIO level into the same
+ * thread flag that would have been generated by the EXTI ISR.
+ *
+ * @param s: orchestrator_signal_t typedef struct containing all information about the signal
+ *
  * @retval None
  */
-static inline void wait_for_validated_signal(uint32_t valid_flag, uint32_t invalid_flag)
+static void inline set_valid_flag_if_active(const orchestrator_signal_t *s)
 {
-    for (;;)
-    {
-      // Wait for the good edge
-      uint32_t result = osThreadFlagsWait(valid_flag, osFlagsWaitAny, osWaitForever);
-
-      if (result & osFlagsError)
-        continue; // Spurious error, just retry
-
-      // Now wait 1 second, but bail out immediately if the bad edge arrives
-      result = osThreadFlagsWait(invalid_flag, osFlagsWaitAny, pdMS_TO_TICKS(1000));
-
-      if (result == osFlagsErrorTimeout)
-        return; // Stayed in valid state for the full second → event confirmed
-
-      // Otherwise: Bad edge arrived within the second → glitch, loop and try again
-    }
+  if (HAL_GPIO_ReadPin(s->port, s->pin) == s->active_state)
+    osThreadFlagsSet(SysOrchestratorHandle, s->valid_flag);
 }
+
+/**
+ * @brief Wait until a signal is confirmed, allowing higher-priority signals
+ *        to preempt.
+ *
+ * Before blocking, the current GPIO levels are sampled and converted into
+ * thread flags so events that occurred before waiting (e.g. after a reboot)
+ * are not missed.
+ *
+ * The function then waits for either the target signal or any preemptor.
+ * Once a candidate signal asserts, it must remain continuously valid for
+ * one second without an invalid edge; otherwise it is treated as a glitch
+ * and waiting resumes.
+ *
+ * If multiple signals are pending simultaneously, ejection takes priority
+ * because it represents the highest-priority permanent event.
+ *
+ * @param target       Signal whose confirmation advances the current stage.
+ * @param preemptors   Signals that may interrupt waiting.
+ * @param n_preemptors Number of entries in @p preemptors.
+ *
+ * @return Pointer to the signal that was successfully confirmed.
+ */
+static const orchestrator_signal_t *wait_for_validated_signal(const orchestrator_signal_t *target, const orchestrator_signal_t **preemptors, size_t n_preemptors)
+{
+  set_valid_flag_if_active(target);
+  for (size_t i = 0; i < n_preemptors; i++)
+    set_valid_flag_if_active(preemptors[i]);
+
+  uint32_t wait_mask = target->valid_flag;
+  for (size_t i = 0; i < n_preemptors; i++)
+    wait_mask |= preemptors[i]->valid_flag;
+
+  for (;;)
+  {
+    uint32_t result = osThreadFlagsWait(wait_mask, osFlagsWaitAny, osWaitForever);
+    if (result & osFlagsError)
+      continue;
+
+    // Ejection always takes priority if present, since it's the highest-priority and physically permanent event.
+    const orchestrator_signal_t *candidate = NULL;
+    if (result & EJECTION_VALID_EDGE_FLAG)
+      candidate = &EJ_SIGNAL;
+    else if (result & target->valid_flag)
+      candidate = target;
+    else
+      for (size_t i = 0; i < n_preemptors; i++)
+        if (result & preemptors[i]->valid_flag) { candidate = preemptors[i]; break; }
+
+    // 1s debounce: must stay valid with no invalid edge, or it's a glitch.
+    // First discard any stale invalid-edge flag from before this debounce window started
+    osThreadFlagsClear(candidate->invalid_flag);
+    if (osThreadFlagsWait(candidate->invalid_flag, osFlagsWaitAny, pdMS_TO_TICKS(1000)) == osFlagsErrorTimeout)
+      return candidate;
+    // glitch — loop back, still waiting on the full mask
+  }
+}
+
+/**
+ * @brief Wait for the next confirmed signal, then persist it.
+ *
+ * Blocks until either the target signal or a preempting signal is confirmed.
+ * Marks the confirmed signal in the mission metadata and immediately writes
+ * the updated metadata to persistent storage.
+ *
+ * @param target       Signal whose confirmation is awaited.
+ * @param preemptors   Signals that may interrupt target signal
+ * @param n            Number of entries in @p preemptors.
+ *
+ * @retval             None
+ */
+static void wait_and_record_signal(const orchestrator_signal_t *target, const orchestrator_signal_t **preemptors, size_t n)
+{
+    const orchestrator_signal_t *result = wait_for_validated_signal(target, preemptors, n);
+    *result->metadata_field = 0xFF;
+
+    osMutexAcquire(sd_mutex_id, osWaitForever);
+    metadata_write(&mission_metadata);
+    osMutexRelease(sd_mutex_id);
+}
+
 
 /* USER CODE END 4 */
 
@@ -1036,35 +1130,29 @@ void StartSystemOrchestrator(void *argument)
   }
   osMutexRelease(sd_mutex_id); 
 
-  // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence
-  // Only wait if LO has NOT already been triggered AND ejection has NOT already happened
-  // If LO has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_metadata.rxsm_lo != 0xFF && mission_metadata.ffu_ejection != 0xFF){
-    wait_for_validated_signal(LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG);
-    // Set the rxsm_lo field in the mission metadata to 0xFF to indicate that LO has occurred, and write the updated mission metadata back to the SD card
-    mission_metadata.rxsm_lo = 0xFF;
-    osMutexAcquire(sd_mutex_id, osWaitForever); 
-    metadata_write(&mission_metadata);
-    osMutexRelease(sd_mutex_id); 
+  // Wait for the Lift-Off (LO) signal before proceeding with the rest of the system startup sequence.
+  // Only wait if LO, SODS, SOE and ejection have NOT already been recorded.
+  // SODS, SOE and ejection can each preempt this wait if they arrive first since they imply LO already happened, 
+  // and any of the four already being set (from this run or a prior reboot) means LO is implicitly confirmed, 
+  // so skip waiting and proceed immediately.
+  if (mission_metadata.rxsm_lo != 0xFF && mission_metadata.rxsm_sods != 0xFF &&
+    mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
+    const orchestrator_signal_t *pre[] = {&SODS_SIGNAL, &SOE_SIGNAL, &EJ_SIGNAL};
+    wait_and_record_signal(&LO_SIGNAL, pre, 3);
   }
 
   // 30 second delay after LO so nothing is executed exactly at LO
   osDelay(pdMS_TO_TICKS(30000));
 
-
   // Instruct EPS to switch to internal power in case this has not happened yet through RXSM uplink
   send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); // TODO: Check with Daniel if this is allowed, otherwise just remove
   
-  // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence
-  // Only wait if SODS has NOT already been triggered AND ejection has NOT already happened
-  // If SODS has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_metadata.rxsm_sods != 0xFF && mission_metadata.ffu_ejection != 0xFF){
-    wait_for_validated_signal(SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG);
-    // Set the rxsm_sods field in the mission metadata to 0xFF to indicate that SODS has occurred, and write the updated mission metadata back to the SD card
-    mission_metadata.rxsm_sods = 0xFF;
-    osMutexAcquire(sd_mutex_id, osWaitForever);
-    metadata_write(&mission_metadata);
-    osMutexRelease(sd_mutex_id);
+  // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence.
+  // SOE and ejection can each preempt this wait if they arrive first since they imply SODS already happened, 
+  // and any of the three already being set means SODS is implicitly confirmed, so skip waiting and proceed immediately.
+  if (mission_metadata.rxsm_sods != 0xFF && mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
+    const orchestrator_signal_t *pre[] = {&SOE_SIGNAL, &EJ_SIGNAL};
+    wait_and_record_signal(&SODS_SIGNAL, pre, 2);
   }
 
   // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
@@ -1079,16 +1167,12 @@ void StartSystemOrchestrator(void *argument)
   // Instruct EPS to turn on camera system power rail
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
 
-  // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence
-  // Only wait if SOE has NOT already been triggered AND ejection has NOT already happened
-  // If SOE has already been triggered OR ejection has already happened, skip waiting and proceed immediately
-  if (mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF){
-    wait_for_validated_signal(SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG);
-    // Set the rxsm_soe field in the mission metadata to 0xFF to indicate that SOE has occurred, and write the updated mission metadata back to the SD card
-    mission_metadata.rxsm_soe = 0xFF;
-    osMutexAcquire(sd_mutex_id, osWaitForever);
-    metadata_write(&mission_metadata);
-    osMutexRelease(sd_mutex_id);
+  // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence.
+  // Ejection can preempt this wait if it arrives first since it implies SOE already happened, 
+  // and either already being set means SODS is implicitly confirmed, so skip waiting and proceed immediately.
+  if (mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
+    const orchestrator_signal_t *pre[] = {&EJ_SIGNAL};
+    wait_and_record_signal(&SOE_SIGNAL, pre, 1);
   }
 
   // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
@@ -1098,19 +1182,15 @@ void StartSystemOrchestrator(void *argument)
   // Signal the GNSSManager to start up by setting the GNSS_STARTUP_FLAG
   osThreadFlagsSet(GNSSManagerHandle, GNSS_STARTUP_FLAG);
 
-  // Wait for the ejection signal before proceeding with the rest of the system startup sequence
-  // If ejection has already been triggered, then skip waiting and proceed immediately
-  if (mission_metadata.ffu_ejection != 0xFF){
-    wait_for_validated_signal(EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG);
-    // Set the ffu_ejection field in the mission metadata to 0xFF to indicate that ejection has occurred, and write the updated mission metadata back to the SD card
-    mission_metadata.ffu_ejection = 0xFF;
-    osMutexAcquire(sd_mutex_id, osWaitForever);
-    metadata_write(&mission_metadata);
-    osMutexRelease(sd_mutex_id); 
+  // Wait for the ejection signal before proceeding with the rest of the system startup sequence.
+  // Only wait if ejection has NOT already been recorded (from this run or a prior reboot).
+  // If it has already been triggered, skip waiting and proceed immediately.
+  if (mission_metadata.ffu_ejection != 0xFF) {
+    wait_and_record_signal(&EJ_SIGNAL, NULL, 0);
   }
 
   // 5 second delay after ejection so nothing is executed exactly at ejection
-  osDelay(pdMS_TO_TICKS(5000))
+  osDelay(pdMS_TO_TICKS(5000));
 
   // Signal the RMUManager to terminate itself by setting the RMU_SHUTDOWN_FLAG
   // Only do it in flight mode, so RXSM uplink can be used for testing purposes
