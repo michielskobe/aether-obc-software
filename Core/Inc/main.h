@@ -41,6 +41,15 @@ typedef enum
   MISSION_MODE_TEST,
   MISSION_MODE_FLIGHT
 } mission_mode_t;
+
+typedef enum
+{
+  FLIGHT_STATE_PRE_EJECTION = 0,
+  FLIGHT_STATE_POST_EJECTION,
+  FLIGHT_STATE_PARACHUTE_DEPLOYED,
+  FLIGHT_STATE_LANDED,
+  FLIGHT_STATE_COMPLETE
+} flight_state_t;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -75,6 +84,7 @@ typedef enum
 #define GNSS_3V3_RAIL_ID 0x04
 #define IRIDIUM_5V_RAIL_ID 0x08
 #define CS_5V_RAIL_ID 0x10
+#define RMU_RAIL_ID 0x20
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/

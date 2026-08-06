@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "can.h"
+#include "cmsis_os2.h"
 #include "command_interface.h"
 #include "data_acquisition.h"
 #include "data_packet.h"
@@ -42,12 +43,12 @@
 
 // Struct containing all information about a single System Orchestrator task signal (LO/SODS/SOE/FFU Ejection)
 typedef struct {
-    uint32_t       valid_flag;
-    uint32_t       invalid_flag;
-    GPIO_TypeDef  *port;
-    uint16_t       pin;
-    GPIO_PinState  active_state;
-    uint8_t       *metadata_field;
+  uint32_t       valid_flag;
+  uint32_t       invalid_flag;
+  GPIO_TypeDef  *port;
+  uint16_t       pin;
+  GPIO_PinState  active_state;
+  uint8_t       *metadata_field;
 } orchestrator_signal_t;
 
 /* USER CODE END PTD */
@@ -65,11 +66,12 @@ typedef struct {
 #define FTPS_DEPLOY_TIMEOUT_MS          10000   // 10 second time-out to allow antenna deployment before issuing fTPS deployment
 #define MODE_SELECTION_TIMEOUT_MS       540000  // 9 minute time-out interval to allow the system to be put into test mode
 
-#define MANIFOLD_PRESSURE_THRESHOLD     0       /* TODO: define */
-#define ALTIMETER_PRESSURE_THRESHOLD    0       /* TODO: define */
-#define ALTITUDE_THRESHOLD              0       /* TODO: define */
-#define LANDED_ALTITUDE_THRESHOLD       0       /* TODO: define */
-#define LANDED_ACCEL_THRESHOLD          0       /* TODO: define */
+#define MANIFOLD_PRESSURE_THRESHOLD     0.4     // Repressurise torus below 0.4 bar gauge
+#define PARACHUTE_ALTITUDE_THRESHOLD    5000    // Deploy parachute below 5 kilometers MSL
+#define ALTITUDE_DELTA_WINDOW_MS        2100    // Check with newest altitude value (~2 seconds ago)
+#define LANDED_ALTITUDE_DELTA_THRESHOLD 1       // Altitude must not vary by 1 meter for landing detection
+#define LANDED_ROTATION_THRESHOLD       0       // No rotation when landed
+#define GYRO_SENSITIVITY_MDPS_PER_DIGIT 70      // FS +-2000 dps
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -165,15 +167,23 @@ const osMessageQueueAttr_t MissionPhaseDataQueue_attributes = {
 /* USER CODE BEGIN PV */
 /* General PV */
 volatile mission_mode_t mission_mode = MISSION_MODE_FLIGHT; // Put the system automatically in flight mode, this can be changed to test mode while waiting for the RXSM signals
+volatile flight_state_t flight_state = FLIGHT_STATE_PRE_EJECTION;
 metadata_t mission_metadata = {0}; // Struct to store mission metadata
 static const orchestrator_signal_t LO_SIGNAL   = {LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG, RXSM_LO_GPIO_Port, RXSM_LO_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_lo};
 static const orchestrator_signal_t SODS_SIGNAL = {SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG, RXSM_SODS_GPIO_Port, RXSM_SODS_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_sods };
 static const orchestrator_signal_t SOE_SIGNAL  = {SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG, RXSM_SOE_GPIO_Port, RXSM_SOE_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_soe };
 static const orchestrator_signal_t EJ_SIGNAL   = {EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG, FFU_EJECT_DETECT_GPIO_Port, FFU_EJECT_DETECT_Pin, GPIO_PIN_SET, &mission_metadata.ffu_ejection };
+static osTimerId_t ejection_safety_timer; // Timer intended to verify valid ejection detection
+static volatile uint32_t ejection_safety_timer_duration = 75000;
+static osTimerId_t parachute_deployment_safety_timer; // Timer intended to ensure parachute deployment
+static volatile uint32_t parachute_deployment_safety_timer_duration = 835000; // 5 kilometer timestamp (ms) according to REXUS trajectory simulations
+static osTimerId_t landing_safety_timer; // Timer intended to ensure landing sequence is executed
+static volatile uint32_t landing_safety_timer_duration = 1500000; // Landing timestamp (ms), exaggeration from REXUS trajectory simulations
 
 /* Iridium PV */
 static osTimerId_t iridium_off_timer; // Timer intended to shut off Iridium after landing
 static osTimerId_t iridium_tx_timer;  // Timer intended to schedule Iridium transmissions
+static volatile uint32_t iridium_tx_timer_interval = 28000; // Interval between Iridium transmissions in ms
 static IridiumCtx_t s_iridium;        // Iridium FSM driver context
 
 /* SD Card PV */
@@ -216,6 +226,10 @@ void StartCommandInterface(void *argument);
 /* USER CODE BEGIN PFP */
 static void Iridium_OffTimer_Callback(void *argument);
 static void Iridium_TxTimer_Callback(void *argument);
+static void EjectionTimer_Callback(void *argument);
+static void ParachuteTimer_Callback(void *argument);
+static void LandingTimer_Callback(void *argument);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -283,6 +297,10 @@ int main(void)
   /* start timers, add new ones, ... */
   iridium_tx_timer = osTimerNew(Iridium_TxTimer_Callback, osTimerPeriodic, NULL, NULL);
   iridium_off_timer = osTimerNew(Iridium_OffTimer_Callback, osTimerOnce, NULL, NULL);
+  ejection_safety_timer = osTimerNew(EjectionTimer_Callback, osTimerOnce, NULL, NULL);
+  parachute_deployment_safety_timer = osTimerNew(ParachuteTimer_Callback, osTimerOnce, NULL, NULL);
+  landing_safety_timer = osTimerNew(LandingTimer_Callback, osTimerOnce, NULL, NULL);
+
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
@@ -891,15 +909,24 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef * huart, uint16_t size){
   */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == UART5)
-    {
-        // Clear error flags by resetting UART reception
-        __HAL_UART_CLEAR_OREFLAG(huart);
+  if (huart->Instance == UART4){
+    // Clear error flags by resetting UART reception
+    __HAL_UART_CLEAR_OREFLAG(huart);
 
-        HAL_UART_DMAStop(huart);
+    HAL_UART_DMAStop(huart);
 
-        mosaic_x5_init(); // Re-initialize the mosaic-X5 UART reception
-    }
+    // Initialise Iridium driver
+    Iridium_Init(&s_iridium, &huart4);
+  }
+  else if (huart->Instance == UART5)
+  {
+    // Clear error flags by resetting UART reception
+    __HAL_UART_CLEAR_OREFLAG(huart);
+
+    HAL_UART_DMAStop(huart);
+
+    mosaic_x5_init(); // Re-initialize the mosaic-X5 UART reception
+  }
 }
 
 /**
@@ -1004,6 +1031,41 @@ static void Iridium_TxTimer_Callback(void *argument)
 }
 
 /**
+ * @brief  Timer that ensured landing can't be detected before nose cone separation.
+ *         No-op. Timer's expiry is now detected via osTimerIsRunning() in
+ *         wait_for_validated_signal() rather than via a state flag set here.
+ * @param  argument: Not used
+ * @retval None
+ */
+static void EjectionTimer_Callback(void *argument){
+  (void)argument;
+  // Intentionally empty.
+}
+
+/**
+ * @brief  Timer that ensures parachute deployment.
+ * @param  argument: Not used
+ * @retval None
+ */
+static void ParachuteTimer_Callback(void *argument){
+  (void)argument;
+  
+  if (mission_mode == MISSION_MODE_FLIGHT){
+    send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+  }
+}
+
+/**
+ * @brief  Timer that ensures enabling of the landing sequence.
+ * @param  argument: Not used
+ * @retval None
+ */
+static void LandingTimer_Callback(void *argument){
+  (void)argument;
+  flight_state = FLIGHT_STATE_LANDED;
+}
+
+/**
  * @brief Sets the signal's valid flag if its GPIO is already in the active state.
  *
  * This handles events that occurred before the orchestrator started waiting,
@@ -1067,6 +1129,14 @@ static const orchestrator_signal_t *wait_for_validated_signal(const orchestrator
     else
       for (size_t i = 0; i < n_preemptors; i++)
         if (result & preemptors[i]->valid_flag) { candidate = preemptors[i]; break; }
+
+    // Discard candidate if it is ejection while ejection safety timer has not expired.
+    // Pre-LO: LO hasn't happened yet this boot, so ejection can't be legitimate — forbidden.
+    // Post-LO: forbidden only while the safety timer is still counting down.
+    // (If a reboot skipped restarting the timer, isRunning() reads false, same as "expired" —
+    // this is the accepted worst-case fallback for a reboot mid-window.)
+    if (candidate == &EJ_SIGNAL && (mission_metadata.rxsm_lo != 0xFF || osTimerIsRunning(ejection_safety_timer)))
+        continue;
 
     // 1s debounce: must stay valid with no invalid edge, or it's a glitch.
     // First discard any stale invalid-edge flag from before this debounce window started
@@ -1139,13 +1209,13 @@ void StartSystemOrchestrator(void *argument)
     mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
     const orchestrator_signal_t *pre[] = {&SODS_SIGNAL, &SOE_SIGNAL, &EJ_SIGNAL};
     wait_and_record_signal(&LO_SIGNAL, pre, 3);
-  }
+    // Start a timer until nose cone separation to protect against premature ejection
+    // osTimerStart(ejection_safety_timer, pdMS_TO_TICKS(ejection_safety_timer_duration)); 
+  } 
 
-  // 30 second delay after LO so nothing is executed exactly at LO
-  osDelay(pdMS_TO_TICKS(30000));
-
-  // Instruct EPS to switch to internal power in case this has not happened yet through RXSM uplink
-  send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1); // TODO: Check with Daniel if this is allowed, otherwise just remove
+  // Instruct EPS to switch to internal power 30 seconds after LO in case this has not happened yet through RXSM uplink
+  osDelay(pdMS_TO_TICKS(3000)); // TODO: Increase to 30 seconds
+  send_can_command_tracked(EPS_BATTERIES_ENABLE_CAN_ID, EPS_BATTERIES_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
   
   // Wait for the Start-Of-Data-Storage (SODS) signal before proceeding with the rest of the system startup sequence.
   // SOE and ejection can each preempt this wait if they arrive first since they imply SODS already happened, 
@@ -1189,16 +1259,18 @@ void StartSystemOrchestrator(void *argument)
     wait_and_record_signal(&EJ_SIGNAL, NULL, 0);
   }
 
-  // 5 second delay after ejection so nothing is executed exactly at ejection
-  osDelay(pdMS_TO_TICKS(5000));
+  // Start a timer to ensure parachute deployment and landing detection
+  osTimerStart(parachute_deployment_safety_timer, pdMS_TO_TICKS(parachute_deployment_safety_timer_duration));  
+  osTimerStart(landing_safety_timer, pdMS_TO_TICKS(landing_safety_timer_duration));
 
   // Signal the RMUManager to terminate itself by setting the RMU_SHUTDOWN_FLAG
   // Only do it in flight mode, so RXSM uplink can be used for testing purposes
   if (mission_mode == MISSION_MODE_FLIGHT){
     osThreadFlagsSet(RMUManagerHandle, RMU_SHUTDOWN_FLAG);
-  }
+  } 
 
-  // Instruct EPS to turn on Iridium 5V power rail
+  // Instruct EPS to turn on Iridium 5V power rail, 5 seconds after ejection
+  osDelay(pdMS_TO_TICKS(5000));
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){IRIDIUM_5V_RAIL_ID}, 1);
   
   // Instruct EPS to turn on IFS 5V power rail and start arming actuators (ONLY IN FLIGHT MODE)
@@ -1219,9 +1291,14 @@ void StartSystemOrchestrator(void *argument)
 
   can_rx_msg_t rx_msg;
   float altitude = MAXFLOAT;
-  float altimeter_pressure = 0;
+  float altitude_ref = MAXFLOAT;
+  uint32_t altitude_ref_tick = 0;
   float manifold_pressure = MAXFLOAT; 
-  float accel = MAXFLOAT;
+  float rotation_rate = MAXFLOAT;
+  uint16_t landed_counter = 0;
+  bool new_rotation_sample = false;
+  uint32_t deploy_tick = 0;
+  bool deploy_tick_set = false;
 
   for (;;)
   {
@@ -1235,23 +1312,26 @@ void StartSystemOrchestrator(void *argument)
           altitude = altitude_raw * 1.5f; // Convert raw value to altitude in meters
           break;
         }
-        case 0x507: // Altimeter data
+        case 0x517: // Manifold pressure data - already converted, 4-byte big-endian float in kPa
         {
-          uint32_t altimeter_raw = (rx_msg.RxData[0] << 24) | (rx_msg.RxData[1] << 16) | (rx_msg.RxData[2] << 8) | rx_msg.RxData[3];
-          altimeter_pressure = altimeter_raw * 10; // Convert raw value to pressure in kPa
+          uint32_t manifold_raw = ((uint32_t)rx_msg.RxData[0] << 24) | ((uint32_t)rx_msg.RxData[1] << 16) | ((uint32_t)rx_msg.RxData[2] << 8) | (uint32_t)rx_msg.RxData[3];
+          memcpy(&manifold_pressure, &manifold_raw, sizeof(float));
           break;
         }
-        case 0x517: // Manifold pressure data
+        case 0x520: // Rotation data: [Yaw, Roll, Pitch], 2 bytes each, big-endian signed int
         {
-          uint16_t manifold_raw = (rx_msg.RxData[0] << 8) | rx_msg.RxData[1];
-          // Convert raw value to voltage, then to pressure in kPa
-          float vout = manifold_raw * (4.95f / 4096.0f);
-          manifold_pressure = ((vout / 5.0f) - 0.04f) / 0.0012858f;
-          break;
-        }
-        case 0x518: // Acceleration data
-        {
-          // TODO: parse acceleration once IMU settings are known
+          int16_t yaw_raw = (int16_t)((rx_msg.RxData[0] << 8) | rx_msg.RxData[1]);
+          int16_t roll_raw = (int16_t)((rx_msg.RxData[2] << 8) | rx_msg.RxData[3]);
+          int16_t pitch_raw = (int16_t)((rx_msg.RxData[4] << 8) | rx_msg.RxData[5]);
+
+          float yaw = yaw_raw * GYRO_SENSITIVITY_MDPS_PER_DIGIT / 1000.0f;
+          float roll = roll_raw * GYRO_SENSITIVITY_MDPS_PER_DIGIT / 1000.0f;
+          float pitch = pitch_raw * GYRO_SENSITIVITY_MDPS_PER_DIGIT / 1000.0f;
+
+          // Magnitude of the angular velocity vector
+          rotation_rate = sqrtf(yaw * yaw + roll * roll + pitch * pitch);
+
+          new_rotation_sample = true;
           break;
         }
         default:
@@ -1259,43 +1339,100 @@ void StartSystemOrchestrator(void *argument)
       }
     }
 
-    // Execute OBC functionality based on mission phase data:
+    if (mission_mode == MISSION_MODE_FLIGHT){
+      switch (flight_state) {
+        case FLIGHT_STATE_PRE_EJECTION:
+          // Wait for ejection to put system in FLIGHT_STATE_POST_EJECTION
+          break;
+        case FLIGHT_STATE_POST_EJECTION:
+          // Manifold pressure drop → fire CGG2
+          if (mission_metadata.cgg1_fired && !mission_metadata.cgg2_fired && manifold_pressure <= MANIFOLD_PRESSURE_THRESHOLD)
+          {
+            // Issue CGG2 ARM signal
+            send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+          }
+          // Altitude thresholds crossed or timer expired → deploy parachute
+          if (altitude <= PARACHUTE_ALTITUDE_THRESHOLD)
+          {
+            send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+            osTimerStop(parachute_deployment_safety_timer);
+          }
+          break;
+        case FLIGHT_STATE_PARACHUTE_DEPLOYED: // Set after IFS confirmation that BW2 is fired
+          // Parachute open → fire CGG2 if not already fired, but with delay to ensure parachute has stabilized after deployment
+          if (!deploy_tick_set) {
+            deploy_tick = osKernelGetTickCount();
+            deploy_tick_set = true;
+          }        
+          if (!mission_metadata.cgg2_fired && (osKernelGetTickCount() - deploy_tick >= pdMS_TO_TICKS(30000))){
+              // Issue CGG2 ARM signal
+              send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+          }
+          if (altitude_ref == MAXFLOAT){
+            altitude_ref = altitude;
+            altitude_ref_tick = osKernelGetTickCount();
+          }
+          if (new_rotation_sample){
+            new_rotation_sample = false;
 
-    // 1. Manifold pressure drop → fire CGG2 (ONLY IN FLIGHT MODE)
-    if (mission_mode == MISSION_MODE_FLIGHT && !mission_metadata.cgg2_fired && manifold_pressure <= MANIFOLD_PRESSURE_THRESHOLD)
-    {
-      // Issue CGG2 ARM signal
-      send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-    }
+            uint32_t now = osKernelGetTickCount();
+            bool window_elapsed = (now - altitude_ref_tick) >= pdMS_TO_TICKS(ALTITUDE_DELTA_WINDOW_MS);
+            bool altitude_stable = window_elapsed &&
+                                (fabsf(altitude - altitude_ref) <= LANDED_ALTITUDE_DELTA_THRESHOLD);
 
-    // 2. Altimeter + altitude thresholds crossed → deploy parachute (ONLY IN FLIGHT MODE)
-    if (mission_mode == MISSION_MODE_FLIGHT && !mission_metadata.bw2_fired && altimeter_pressure >= ALTIMETER_PRESSURE_THRESHOLD && altitude <= ALTITUDE_THRESHOLD)
-    {
-      send_can_command_tracked(IFS_ARM_BW2_CAN_ID, IFS_ARM_BW2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-    }
+            
 
-    // 3. Parachute open → fire CGG2 if not already fired (ONLY IN FLIGHT MODE)
-    if (mission_mode == MISSION_MODE_FLIGHT && mission_metadata.bw2_fired && !mission_metadata.cgg2_fired)
-    {
-      // Delay to ensure parachute has stabilized after deployment 
-      osDelay(pdMS_TO_TICKS(30000));
+            if (altitude_stable)
+            {
+              if (rotation_rate <= LANDED_ROTATION_THRESHOLD)
+              {
+                landed_counter++;
+              }
+              else if (landed_counter > 0){
+                  landed_counter--;
+              }
+            }
+            else
+            {
+              landed_counter = 0;
+            }
 
-      // Issue CGG2 ARM signal
-      send_can_command_tracked(IFS_ARM_CGG2_CAN_ID, IFS_ARM_CGG2_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
-    }
+            // Slide the comparison window forward once it's elapsed, regardless
+            // of the outcome above, so we keep comparing to "~2s ago" rather
+            // than freezing on the very first sample taken in this state.
+            if (window_elapsed)
+            {
+              altitude_ref = altitude;
+              altitude_ref_tick = now;
+            }
 
-    // 4. Landing detected (low altitude + low acceleration) → power off all except OBC + UHFCOM
-    if (altitude <= LANDED_ALTITUDE_THRESHOLD && accel <= LANDED_ACCEL_THRESHOLD)
-    {
-      // Disable unused power rails
-      send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
-      send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
+            if (landed_counter >= 80) // 5 seconds at 16 Hz
+            {
+              flight_state = FLIGHT_STATE_LANDED;
+              osTimerStop(landing_safety_timer);
 
-      // Enable beacon mode
-      send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+            }
+          }
+          break;
+        case FLIGHT_STATE_LANDED:
+          // Disable unused power rails
+          send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){CS_5V_RAIL_ID}, 1);
+          send_can_command_tracked(EPS_RAIL_DISABLE_CAN_ID, EPS_RAIL_DISABLE_CAN_REPLY_ID, (uint8_t[]){IFS_3V3_RAIL_ID}, 1);
 
-      // Start Iridium timer (5 minutes)
-      osTimerStart(iridium_off_timer, pdMS_TO_TICKS(300000));
+          // Enable beacon mode
+          send_can_command_tracked(UHFCOM_BEACON_ENABLE_CAN_ID, UHFCOM_BEACON_ENABLE_CAN_REPLY_ID, (uint8_t[]){0x00}, 1);
+
+          // Start Iridium timer (5 minutes)
+          osTimerStart(iridium_off_timer, pdMS_TO_TICKS(300000));
+
+          flight_state = FLIGHT_STATE_COMPLETE;
+          break;
+        case FLIGHT_STATE_COMPLETE:
+          osDelay(1000);
+          break;
+        default:
+          break;
+      }
     }
   }
   /* USER CODE END 5 */
@@ -1548,8 +1685,8 @@ void StartIridiumManager(void *argument)
   // Initialise Iridium driver
   Iridium_Init(&s_iridium, &huart4);
 
-  // Start periodic TX timer (15 s)
-  osTimerStart(iridium_tx_timer, 15000);
+  // Start periodic TX timer
+  osTimerStart(iridium_tx_timer, pdMS_TO_TICKS(iridium_tx_timer_interval));
 
   
   /* Infinite loop */
@@ -1567,7 +1704,7 @@ void StartIridiumManager(void *argument)
 
     //3. Check for TX flag (1-tick timeout = natural yield)
     uint32_t flags = osThreadFlagsWait(IRIDIUM_TX_FLAG, osFlagsWaitAny, 1u);
-    if ((flags & IRIDIUM_TX_FLAG) == IRIDIUM_TX_FLAG)
+    if (flags == IRIDIUM_TX_FLAG)
     {
         /*
           * Iridium_SessionStart() is a no-op if:

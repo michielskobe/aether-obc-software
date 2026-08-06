@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "sd_spi.h"
 
 /* Private typedef -----------------------------------------------------------*/
 typedef void (*RXSMMessageHandler_t)(const RXSM_Telecommand_t *tc);
@@ -68,6 +69,8 @@ extern CRC_HandleTypeDef hcrc; // Declared in main.c
 extern UART_HandleTypeDef hlpuart1; // Declared in main.c
 extern osThreadId_t SysOrchestratorHandle; // Declared in main.c
 extern mission_mode_t mission_mode; // Declared in main.c
+extern metadata_t mission_metadata; // Declared in main.c
+extern osMutexId_t sd_mutex_id; // Mutex to protect SD write and read operations, declared in main.c
 
 /* Private function prototypes -----------------------------------------------*/
 static void HandleEpsPing(const RXSM_Telecommand_t *tc);
@@ -110,6 +113,7 @@ static void HandleSimulateLO(const RXSM_Telecommand_t *tc);
 static void HandleSimulateSODS(const RXSM_Telecommand_t *tc);
 static void HandleSimulateSOE(const RXSM_Telecommand_t *tc);
 static void HandleSimulateEjection(const RXSM_Telecommand_t *tc);
+static void HandleSDClearMetadata(const RXSM_Telecommand_t *tc);
 
 /* Dispatch table ------------------------------------------------------------*/
 static const RXSMDispatchEntry_t dispatch_table[] =
@@ -155,6 +159,7 @@ static const RXSMDispatchEntry_t dispatch_table[] =
     {SIMULATE_SODS_RXSM_ID,           HandleSimulateSODS},
     {SIMULATE_SOE_RXSM_ID,            HandleSimulateSOE},
     {SIMULATE_EJECTION_RXSM_ID,       HandleSimulateEjection},
+    {SD_CLEAR_METADATA_RXSM_ID,       HandleSDClearMetadata},
 };
 
 /* Private user code ---------------------------------------------------------*/
@@ -450,6 +455,22 @@ static void HandleSimulateEjection(const RXSM_Telecommand_t *tc)
     } else {
         RXSM_SendMessage(SIMULATE_EJECTION_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
     }
+}
+
+static void HandleSDClearMetadata(const RXSM_Telecommand_t *tc){
+    (void)tc;
+
+    osMutexAcquire(sd_mutex_id, osWaitForever); 
+    int status = metadata_write(&mission_metadata);
+    osMutexRelease(sd_mutex_id); 
+
+    if (status == 0){
+        RXSM_SendMessage(SD_CLEAR_METADATA_RXSM_ID, (uint8_t[]){0xFF}, 1); // OK reply
+    } else {
+        RXSM_SendMessage(SD_CLEAR_METADATA_RXSM_ID, (uint8_t[]){0x00}, 1); // NOK reply
+    }
+
+
 }
 
 static uint16_t RXSM_ComputeCRC(const RXSM_Telecommand_t *tc)

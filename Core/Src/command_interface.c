@@ -49,6 +49,7 @@ extern osThreadId_t SysOrchestratorHandle; // Declared in main.c, used to set fl
 extern metadata_t mission_metadata; // Declared in main.c
 extern osMutexId_t sd_mutex_id; // Declared in main.c, used to synchronize access to SD card from command handlers
 extern mission_mode_t mission_mode; // Declared in main.c
+extern flight_state_t flight_state; // Declared in main.c
 
 /* Private function prototypes -----------------------------------------------*/
 static void HandleEpsPingReply(const can_rx_msg_t *msg);
@@ -310,6 +311,7 @@ static void HandleIfsArmBw2Reply(const can_rx_msg_t *msg)
             mission_metadata.bw2_fired = 0xFF;
             metadata_write(&mission_metadata);
             osMutexRelease(sd_mutex_id);
+            flight_state = FLIGHT_STATE_PARACHUTE_DEPLOYED;
         }
     }
 }
@@ -331,6 +333,7 @@ static void HandleIfsFireBw2Reply(const can_rx_msg_t *msg)
             mission_metadata.bw2_fired = 0xFF;
             metadata_write(&mission_metadata);
             osMutexRelease(sd_mutex_id);
+            flight_state = FLIGHT_STATE_PARACHUTE_DEPLOYED;
         }
     }
 }
@@ -492,6 +495,7 @@ static void HandleIfsFireDecay(const can_rx_msg_t *msg)
     }
     else if (msg->RxData[0] == BW2_DECAY_ID)
     {
+        flight_state = FLIGHT_STATE_PARACHUTE_DEPLOYED;
         mission_metadata.bw2_fired = 0xFF; // Mark BW2 as spent in the mission metadata
     }
     else if (msg->RxData[0] == CGG1_DECAY_ID)
