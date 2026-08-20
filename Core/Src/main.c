@@ -171,7 +171,7 @@ volatile flight_state_t flight_state = FLIGHT_STATE_PRE_EJECTION;
 metadata_t mission_metadata = {0}; // Struct to store mission metadata
 static const orchestrator_signal_t LO_SIGNAL   = {LO_VALID_EDGE_FLAG, LO_INVALID_EDGE_FLAG, RXSM_LO_GPIO_Port, RXSM_LO_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_lo};
 static const orchestrator_signal_t SODS_SIGNAL = {SODS_VALID_EDGE_FLAG, SODS_INVALID_EDGE_FLAG, RXSM_SODS_GPIO_Port, RXSM_SODS_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_sods };
-static const orchestrator_signal_t SOE_SIGNAL  = {SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG, RXSM_SOE_GPIO_Port, RXSM_SOE_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_soe };
+// static const orchestrator_signal_t SOE_SIGNAL  = {SOE_VALID_EDGE_FLAG, SOE_INVALID_EDGE_FLAG, RXSM_SOE_GPIO_Port, RXSM_SOE_Pin, GPIO_PIN_RESET, &mission_metadata.rxsm_soe };
 static const orchestrator_signal_t EJ_SIGNAL   = {EJECTION_VALID_EDGE_FLAG, EJECTION_INVALID_EDGE_FLAG, FFU_EJECT_DETECT_GPIO_Port, FFU_EJECT_DETECT_Pin, GPIO_PIN_SET, &mission_metadata.ffu_ejection };
 static osTimerId_t ejection_safety_timer; // Timer intended to verify valid ejection detection
 static volatile uint32_t ejection_safety_timer_duration = 75000;
@@ -573,7 +573,8 @@ static void MX_LPUART1_UART_Init(void)
   hlpuart1.Init.Mode = UART_MODE_TX_RX;
   hlpuart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   hlpuart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_RXINVERT_INIT;
+  hlpuart1.AdvancedInit.RxPinLevelInvert = UART_ADVFEATURE_RXINV_ENABLE;
   if (HAL_UART_Init(&hlpuart1) != HAL_OK)
   {
     Error_Handler();
@@ -768,8 +769,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : RXSM_SODS_Pin RXSM_SOE_Pin RXSM_LO_Pin FFU_EJECT_DETECT_Pin */
-  GPIO_InitStruct.Pin = RXSM_SODS_Pin|RXSM_SOE_Pin|RXSM_LO_Pin|FFU_EJECT_DETECT_Pin;
+  /*Configure GPIO pins : RXSM_LO_Pin RXSM_SODS_Pin FFU_EJECT_DETECT_Pin */
+  GPIO_InitStruct.Pin = RXSM_LO_Pin|RXSM_SODS_Pin|FFU_EJECT_DETECT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -807,9 +808,6 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(RI_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-
   HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI1_IRQn);
 
@@ -972,7 +970,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
       else
         osThreadFlagsSet(SysOrchestratorHandle, SODS_INVALID_EDGE_FLAG);
       break;
-    case RXSM_SOE_Pin: // SOE signal from RXSM
+    /*case RXSM_SOE_Pin: // SOE signal from RXSM
       if (mission_metadata.ffu_ejection == 0xFF)
         HAL_NVIC_DisableIRQ(RXSM_SOE_EXTI_IRQn); // Pogo link is physically gone, pin is floating, disable interrupt
       // Check the state of the SOE pin to determine if it is a valid or invalid edge
@@ -980,7 +978,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         osThreadFlagsSet(SysOrchestratorHandle, SOE_VALID_EDGE_FLAG);
       else
         osThreadFlagsSet(SysOrchestratorHandle, SOE_INVALID_EDGE_FLAG);
-      break;
+      break;*/
     case FFU_EJECT_DETECT_Pin: // Ejection detection signal from FFU
       // Check the state of the FFU_EJECT_DETECT pin to determine if it is a valid or invalid edge
       if (HAL_GPIO_ReadPin(FFU_EJECT_DETECT_GPIO_Port, FFU_EJECT_DETECT_Pin) == GPIO_PIN_SET)
@@ -1216,8 +1214,8 @@ void StartSystemOrchestrator(void *argument)
   // so skip waiting and proceed immediately.
   if (mission_metadata.rxsm_lo != 0xFF && mission_metadata.rxsm_sods != 0xFF &&
     mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
-    const orchestrator_signal_t *pre[] = {&SODS_SIGNAL, &SOE_SIGNAL, &EJ_SIGNAL};
-    wait_and_record_signal(&LO_SIGNAL, pre, 3);
+    const orchestrator_signal_t *pre[] = {&SODS_SIGNAL, &EJ_SIGNAL};
+    wait_and_record_signal(&LO_SIGNAL, pre, 2);
     // Start a timer until nose cone separation to protect against premature ejection
     // osTimerStart(ejection_safety_timer, pdMS_TO_TICKS(ejection_safety_timer_duration)); 
   } 
@@ -1230,8 +1228,8 @@ void StartSystemOrchestrator(void *argument)
   // SOE and ejection can each preempt this wait if they arrive first since they imply SODS already happened, 
   // and any of the three already being set means SODS is implicitly confirmed, so skip waiting and proceed immediately.
   if (mission_metadata.rxsm_sods != 0xFF && mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
-    const orchestrator_signal_t *pre[] = {&SOE_SIGNAL, &EJ_SIGNAL};
-    wait_and_record_signal(&SODS_SIGNAL, pre, 2);
+    const orchestrator_signal_t *pre[] = {&EJ_SIGNAL};
+    wait_and_record_signal(&SODS_SIGNAL, pre, 1);
   }
 
   // Signal the SDCardManager to start up by setting the SD_CARD_STARTUP_FLAG
@@ -1249,10 +1247,10 @@ void StartSystemOrchestrator(void *argument)
   // Wait for the Start-Of-Experiment (SOE) signal before proceeding with the rest of the system startup sequence.
   // Ejection can preempt this wait if it arrives first since it implies SOE already happened, 
   // and either already being set means SODS is implicitly confirmed, so skip waiting and proceed immediately.
-  if (mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
+  /*if (mission_metadata.rxsm_soe != 0xFF && mission_metadata.ffu_ejection != 0xFF) {
     const orchestrator_signal_t *pre[] = {&EJ_SIGNAL};
     wait_and_record_signal(&SOE_SIGNAL, pre, 1);
-  }
+  }*/
 
   // Instruct EPS to turn on UHFCOM, GNSS and IFS 3V3 power rails
   send_can_command_tracked(EPS_RAIL_ENABLE_CAN_ID, EPS_RAIL_ENABLE_CAN_REPLY_ID, (uint8_t[]){GNSS_3V3_RAIL_ID}, 1);

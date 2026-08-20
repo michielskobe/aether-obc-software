@@ -1,3 +1,7 @@
+# RMU REV02 Patch
+
+This branch acts as a patch for the incorrect RMU REV02 RXSM signal routing. The original SODS line is removed since this is not connected on the PCB. The LO and SOE lines are crossed since it is routed this way on the PCB. The new updated SOE is renamed to SODS and acts as the SODS signal. The system doesn't wait for a dedicated SOE signal anymore. RX Pin Active Level Inversion is enabled since there is a _P/_N crossing on Rev 02 of the RMU PCB.
+
 # Aether OBC Firmware
 
 Firmware for Aether's On-Board Computer (OBC) based on the STM32L476 microcontroller.
