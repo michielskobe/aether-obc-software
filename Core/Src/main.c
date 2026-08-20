@@ -1143,7 +1143,16 @@ static const orchestrator_signal_t *wait_for_validated_signal(const orchestrator
     osThreadFlagsClear(candidate->invalid_flag);
     if (osThreadFlagsWait(candidate->invalid_flag, osFlagsWaitAny, pdMS_TO_TICKS(1000)) == osFlagsErrorTimeout)
       return candidate;
-    // glitch — loop back, still waiting on the full mask
+    // glitch — candidate->valid_flag was already consumed by the match above and
+    // will only be re-armed by a fresh EXTI edge. Ejection is a permanent level
+    // change (connector separation pulls the line high and it stays high), so if
+    // contact chatter during separation trips a glitch inside the debounce window,
+    // no further edge will ever come. Re-sample current levels so a still-active
+    // line is re-flagged without needing a new edge.
+    set_valid_flag_if_active(target);
+    for (size_t i = 0; i < n_preemptors; i++)
+      set_valid_flag_if_active(preemptors[i]);
+    // loop back, still waiting on the full mask
   }
 }
 
